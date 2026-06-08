@@ -5,7 +5,7 @@ A terminal-based YouTube Music player written in Rust. Features search, playlist
 > [!NOTE]
 > This project was vibe coded with ❤️ using **Claude** and **Antigravity**.
 >
-> It was inspired by **[youtube-music-cli](https://github.com/involvex/youtube-music-cli)**, a similar CLI application written in Node.js.
+> It was inspired by **[youtube-music-cli](https://github.com/involvex/youtube-music-cli)**, a similar CLI application built with Bun.
 
 ---
 
