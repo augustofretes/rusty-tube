@@ -307,23 +307,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audio-app"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "directories",
- "ratatui",
- "reqwest 0.11.27",
- "rodio",
- "rookie",
- "serde",
- "serde_json",
- "souvlaki",
- "tokio",
- "ytmapi-rs",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3435,6 +3418,23 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+
+[[package]]
+name = "rusty-tube"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "directories",
+ "ratatui",
+ "reqwest 0.11.27",
+ "rodio",
+ "rookie",
+ "serde",
+ "serde_json",
+ "souvlaki",
+ "tokio",
+ "ytmapi-rs",
+]
 
 [[package]]
 name = "ryu"

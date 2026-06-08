@@ -20,26 +20,34 @@ A terminal-based YouTube Music player written in Rust. Features search, playlist
 
 ---
 
-## Prerequisites
+## Installation
 
-Before running Rusty Tube, ensure you have the following system dependencies installed:
+### Homebrew (macOS)
+
+```bash
+brew install augustofretes/tap/rusty-tube
+```
+
+This pulls in the required `ffmpeg` and `yt-dlp` dependencies automatically. Once installed, launch it with:
+
+```bash
+rusty-tube
+```
+
+### Build from source
+
+Rusty Tube depends on two system tools at runtime:
 
 - **ffmpeg**: Required for audio streaming and decoding.
 - **yt-dlp**: Required for extracting media URLs.
 
-### Installation on macOS:
+With the [Rust toolchain](https://rustup.rs/) installed, build and run from source:
+
 ```bash
 brew install ffmpeg yt-dlp
-```
-
----
-
-## Getting Started
-
-To run the application, clone this repository and run cargo:
-
-```bash
-cargo run
+git clone https://github.com/augustofretes/rusty-tube.git
+cd rusty-tube
+cargo run --release
 ```
 
 ---

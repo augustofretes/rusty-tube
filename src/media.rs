@@ -62,8 +62,8 @@ mod macos {
         /// it — which is where the TUI loop runs.
         pub fn new() -> Option<Self> {
             let config = PlatformConfig {
-                dbus_name: "audio-app",
-                display_name: "YTM-TUI Player",
+                dbus_name: "rusty-tube",
+                display_name: "Rusty Tube",
                 hwnd: None,
             };
             let mut controls = MediaControls::new(config).ok()?;
