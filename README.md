@@ -18,6 +18,9 @@ A terminal-based YouTube Music player written in Rust. Features search, playlist
 - 🎚️ **Playback Control**: Pause, resume, seek, and adjust volume using hotkeys.
 - 🖥️ **Terminal UI**: Responsive, beautiful interface powered by `ratatui`.
 
+> [!NOTE]
+> When you log in, macOS will prompt you to grant access to the system keychain. Rusty Tube needs this access to read your browser's stored cookie in order to authenticate with YouTube Music. The prompt appears only at login.
+
 ---
 
 ## Installation
