@@ -11,12 +11,13 @@ pub enum Tab {
     Library = 1,
     Playlists = 2,
     History = 3,
-    Login = 4,
+    Radio = 4,
+    Login = 5,
 }
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Search, Tab::Library, Tab::Playlists, Tab::History, Tab::Login]
+        &[Tab::Search, Tab::Library, Tab::Playlists, Tab::History, Tab::Radio, Tab::Login]
     }
 
     pub fn name(&self) -> &'static str {
@@ -25,7 +26,34 @@ impl Tab {
             Tab::Library => "❤️ Library (Liked)",
             Tab::Playlists => "📁 Playlists",
             Tab::History => "🕒 History",
+            Tab::Radio => "📻 Radio (For You)",
             Tab::Login => "🔑 Account Login",
+        }
+    }
+}
+
+/// Repeat/loop behaviour applied when a track finishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopMode {
+    Off,
+    Queue,
+    One,
+}
+
+impl LoopMode {
+    fn next(self) -> Self {
+        match self {
+            LoopMode::Off => LoopMode::Queue,
+            LoopMode::Queue => LoopMode::One,
+            LoopMode::One => LoopMode::Off,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            LoopMode::Off => "Off",
+            LoopMode::Queue => "All",
+            LoopMode::One => "One",
         }
     }
 }
@@ -70,7 +98,11 @@ pub struct App {
     
     // History tab state
     pub history_tracks: Vec<Track>,
-    
+
+    // Radio / recommendations tab state
+    pub recommendation_tracks: Vec<Track>,
+    pub radio_seed_title: Option<String>,
+
     // Login state
     pub login_input: String,
     pub login_status_msg: String,
@@ -79,7 +111,8 @@ pub struct App {
     // Queue state
     pub queue: Vec<Track>,
     pub queue_index: usize,
-    
+    pub loop_mode: LoopMode,
+
     // Status logs shown in UI
     pub status_message: String,
 }
@@ -115,11 +148,14 @@ impl App {
             active_playlist_id: None,
             active_playlist_title: None,
             history_tracks: Vec::new(),
+            recommendation_tracks: Vec::new(),
+            radio_seed_title: None,
             login_input: String::new(),
             login_status_msg: String::new(),
             cookie_path_str,
             queue: Vec::new(),
             queue_index: 0,
+            loop_mode: LoopMode::Off,
             status_message,
         };
 
@@ -188,6 +224,7 @@ impl App {
                     }
                 }
                 Tab::History => self.history_tracks.len(),
+                Tab::Radio => self.recommendation_tracks.len(),
                 Tab::Login => 0,
             },
             Focus::SearchInput | Focus::LoginInput => 0,
@@ -248,6 +285,39 @@ impl App {
         }
     }
 
+    /// Called when the current track finishes on its own. Applies the active
+    /// loop mode to decide what (if anything) plays next.
+    pub fn on_song_finished(&mut self) {
+        match self.loop_mode {
+            LoopMode::One => {
+                // Replay the current track from the start.
+                if let Some(track) = self.queue.get(self.queue_index).cloned() {
+                    let index = self.queue_index;
+                    self.play_track(track, self.queue.clone(), index);
+                }
+            }
+            LoopMode::Queue => {
+                if self.queue.is_empty() {
+                    return;
+                }
+                let next_index = if self.queue_index + 1 < self.queue.len() {
+                    self.queue_index + 1
+                } else {
+                    0 // Wrap around to the start of the queue.
+                };
+                let next_track = self.queue[next_index].clone();
+                self.play_track(next_track, self.queue.clone(), next_index);
+            }
+            LoopMode::Off => self.play_next(),
+        }
+    }
+
+    /// Cycles the loop mode: Off -> All -> One -> Off.
+    pub fn cycle_loop_mode(&mut self) {
+        self.loop_mode = self.loop_mode.next();
+        self.status_message = format!("Repeat: {}", self.loop_mode.label());
+    }
+
     /// Backtracks to the previous track in the queue (if any)
     pub fn play_prev(&mut self) {
         if self.queue.is_empty() {
@@ -296,6 +366,7 @@ impl App {
                 self.selected_index = Tab::Search as usize;
                 self.focus = Focus::SearchInput;
             }
+            KeyCode::Char('R') => self.start_radio().await,
             _ => self.handle_global_audio_keys(key),
         }
     }
@@ -328,6 +399,7 @@ impl App {
             KeyCode::Enter => {
                 self.execute_main_selection().await;
             }
+            KeyCode::Char('R') => self.start_radio().await,
             KeyCode::Tab => {
                 // Toggle search type if on search tab
                 if self.active_tab == Tab::Search {
@@ -378,7 +450,75 @@ impl App {
                 let track = self.history_tracks[self.selected_index].clone();
                 self.play_track(track, self.history_tracks.clone(), self.selected_index);
             }
+            Tab::Radio => {
+                let track = self.recommendation_tracks[self.selected_index].clone();
+                self.play_track(track, self.recommendation_tracks.clone(), self.selected_index);
+            }
             Tab::Login => {}
+        }
+    }
+
+    /// Returns the track currently highlighted in the focused main list, if any.
+    fn current_selected_track(&self) -> Option<Track> {
+        if self.focus != Focus::Main {
+            return None;
+        }
+        match self.active_tab {
+            Tab::Search => match self.search_type {
+                SearchType::Songs => self.searched_songs.get(self.selected_index).cloned(),
+                SearchType::Playlists => None,
+            },
+            Tab::Library => self.library_songs.get(self.selected_index).cloned(),
+            Tab::Playlists => {
+                if self.active_playlist_id.is_some() {
+                    self.playlist_tracks.get(self.selected_index).cloned()
+                } else {
+                    None
+                }
+            }
+            Tab::History => self.history_tracks.get(self.selected_index).cloned(),
+            Tab::Radio => self.recommendation_tracks.get(self.selected_index).cloned(),
+            Tab::Login => None,
+        }
+    }
+
+    /// Starts a "radio" of recommended tracks. The seed is the highlighted song
+    /// (if a list is focused), otherwise the track currently playing. The result
+    /// populates the Radio tab and begins playing through the recommendations.
+    async fn start_radio(&mut self) {
+        let seed = self
+            .current_selected_track()
+            .or_else(|| self.player.lock().unwrap().current_track.clone());
+
+        let seed = match seed {
+            Some(t) => t,
+            None => {
+                self.status_message =
+                    "Select or play a song first to start a radio.".to_string();
+                return;
+            }
+        };
+
+        self.status_message = format!("Building radio from: {}...", seed.title);
+        match self.client.get_watch_playlist(&seed.id).await {
+            Ok(tracks) if !tracks.is_empty() => {
+                self.recommendation_tracks = tracks;
+                self.radio_seed_title = Some(seed.title.clone());
+                self.active_tab = Tab::Radio;
+                self.focus = Focus::Main;
+                self.selected_index = 0;
+                self.status_message =
+                    format!("Radio: {} recommendations.", self.recommendation_tracks.len());
+
+                let first = self.recommendation_tracks[0].clone();
+                self.play_track(first, self.recommendation_tracks.clone(), 0);
+            }
+            Ok(_) => {
+                self.status_message = "No recommendations found for this track.".to_string();
+            }
+            Err(e) => {
+                self.status_message = format!("Failed to load radio: {}", e);
+            }
         }
     }
 
@@ -542,6 +682,10 @@ impl App {
             KeyCode::Char('p') | KeyCode::Char('<') => {
                 drop(p);
                 self.play_prev();
+            }
+            KeyCode::Char('r') => {
+                drop(p);
+                self.cycle_loop_mode();
             }
             KeyCode::Right => {
                 // Seek forward 10 seconds

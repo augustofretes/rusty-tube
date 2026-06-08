@@ -2,7 +2,7 @@ use std::path::Path;
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::browser::BrowserToken;
 use ytmapi_rs::auth::noauth::NoAuthToken;
-use ytmapi_rs::common::{PlaylistID, YoutubeID};
+use ytmapi_rs::common::{PlaylistID, VideoID, YoutubeID};
 use ytmapi_rs::parse::{PlaylistItem, HistoryItem, SearchResultPlaylist};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -155,6 +155,28 @@ impl YtClient {
                     artist: e.podcast_name,
                     duration: "".to_string(),
                 }),
+            })
+            .collect();
+
+        Ok(tracks)
+    }
+
+    /// Fetch a "radio"/recommendations queue of tracks related to a given video.
+    /// Works in both authenticated and guest mode.
+    pub async fn get_watch_playlist(&self, video_id: &str) -> Result<Vec<Track>, ytmapi_rs::Error> {
+        let vid = VideoID::from_raw(video_id.to_string());
+        let raw_tracks = match self {
+            YtClient::Authenticated(yt) => yt.get_watch_playlist_from_video_id(vid).await?,
+            YtClient::Unauthenticated(yt) => yt.get_watch_playlist_from_video_id(vid).await?,
+        };
+
+        let tracks = raw_tracks
+            .into_iter()
+            .map(|t| Track {
+                id: t.video_id.get_raw().to_string(),
+                title: t.title,
+                artist: t.author,
+                duration: t.duration,
             })
             .collect();
 

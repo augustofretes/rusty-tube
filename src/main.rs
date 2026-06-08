@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         if is_song_finished {
-            app.play_next();
+            app.on_song_finished();
         }
 
         // Poll for crossterm input events

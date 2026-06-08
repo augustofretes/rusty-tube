@@ -33,8 +33,6 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Span::styled(" YTM-TUI PLAYER ", Style::default().bg(active_color).fg(Color::Black).add_modifier(Modifier::BOLD)),
         Span::raw(" │ "),
         user_status,
-        Span::raw(" │ STATUS: "),
-        Span::styled(&app.status_message, Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)),
     ]))
     .block(Block::default().borders(Borders::BOTTOM).border_style(Style::default().fg(muted_color)));
     
@@ -343,6 +341,46 @@ pub fn render(f: &mut Frame, app: &mut App) {
                 f.render_stateful_widget(table, inner_area, &mut table_state);
             }
         }
+        Tab::Radio => {
+            if app.recommendation_tracks.is_empty() {
+                let text = Paragraph::new("\n\n  No radio yet.\n  Highlight or play a song anywhere, then press 'R' to start a radio of recommendations based on it.")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(Color::Gray));
+                f.render_widget(text, inner_area);
+            } else {
+                let rows: Vec<Row> = app.recommendation_tracks
+                    .iter()
+                    .map(|song| Row::new(vec![
+                        Cell::from(song.title.clone()),
+                        Cell::from(song.artist.clone()),
+                        Cell::from(song.duration.clone()),
+                    ]))
+                    .collect();
+
+                let seed_label = app.radio_seed_title
+                    .as_deref()
+                    .map(|s| format!(" Recommended from: {} ", s))
+                    .unwrap_or_else(|| " Recommendations ".to_string());
+
+                let table = Table::new(
+                    rows,
+                    [Constraint::Percentage(50), Constraint::Percentage(40), Constraint::Percentage(10)]
+                )
+                .header(
+                    Row::new(vec!["RECOMMENDED SONG TITLE", "ARTIST", "DURATION"])
+                        .style(Style::default().fg(active_color).add_modifier(Modifier::BOLD))
+                )
+                .block(Block::default().title(seed_label).title_style(Style::default().fg(Color::Yellow)))
+                .highlight_style(Style::default().bg(Color::Rgb(20, 40, 40)).fg(active_color).add_modifier(Modifier::BOLD))
+                .highlight_symbol("▶ ");
+
+                let mut table_state = TableState::default();
+                if app.focus == Focus::Main {
+                    table_state.select(Some(app.selected_index));
+                }
+                f.render_stateful_widget(table, inner_area, &mut table_state);
+            }
+        }
         Tab::Login => {
             // Render instructions + raw input field
             let login_layout = Layout::default()
@@ -463,6 +501,12 @@ pub fn render(f: &mut Frame, app: &mut App) {
     f.render_widget(progress_widget, player_layout[1]);
 
     // 3. Shortcuts & Volume Control
+    // Highlight the repeat label when looping is active so it stands out.
+    let repeat_style = if app.loop_mode == crate::app::LoopMode::Off {
+        Style::default().fg(Color::Gray)
+    } else {
+        Style::default().fg(success_color).add_modifier(Modifier::BOLD)
+    };
     let shortcuts_text = Line::from(vec![
         Span::styled("[Space] ", Style::default().fg(active_color).add_modifier(Modifier::BOLD)),
         Span::raw("Play/Pause  "),
@@ -474,6 +518,10 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Span::raw("Seek ±10s  "),
         Span::styled("[↑/↓] ", Style::default().fg(active_color).add_modifier(Modifier::BOLD)),
         Span::raw(format!("Volume ({:.0}%)  ", volume_level * 100.0)),
+        Span::styled("[r] ", Style::default().fg(active_color).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("Repeat: {}  ", app.loop_mode.label()), repeat_style),
+        Span::styled("[R] ", Style::default().fg(active_color).add_modifier(Modifier::BOLD)),
+        Span::raw("Radio  "),
         Span::styled("[q] ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         Span::raw("Quit"),
     ]);
