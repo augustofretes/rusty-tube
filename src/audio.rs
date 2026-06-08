@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::process::{Command, Stdio, ChildStdout, Child};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -11,7 +11,7 @@ const CHANNELS: u16 = 2;
 
 /// A custom rodio Source that pulls raw 16-bit PCM samples from ffmpeg's stdout.
 pub struct PcmSource {
-    stdout: ChildStdout,
+    stdout: BufReader<ChildStdout>,
     channels: u16,
     sample_rate: u32,
     samples_read: Arc<AtomicU64>,
@@ -177,9 +177,10 @@ impl AudioPlayer {
         let initial_samples = start_seconds * CHANNELS as u64 * SAMPLE_RATE as u64;
         self.samples_read.store(initial_samples, Ordering::Relaxed);
         
-        // Create custom source
+        // Create custom source. Wrap stdout in a large BufReader so we pull
+        // PCM from ffmpeg in bulk reads instead of one 2-byte syscall per sample.
         let source = PcmSource {
-            stdout,
+            stdout: BufReader::with_capacity(64 * 1024, stdout),
             channels: CHANNELS,
             sample_rate: SAMPLE_RATE,
             samples_read: self.samples_read.clone(),
