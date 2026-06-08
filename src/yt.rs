@@ -34,11 +34,10 @@ impl YtClient {
             if cookie_path.exists() {
                 match YtMusic::from_cookie_file(cookie_path).await {
                     Ok(client) => {
-                        println!("Initialized authenticated YouTube Music client.");
                         return YtClient::Authenticated(client);
                     }
-                    Err(e) => {
-                        eprintln!("Failed to load cookie: {}. Falling back to Guest mode.", e);
+                    Err(_) => {
+                        // Cookie failed to load; fall through to guest mode.
                     }
                 }
             }
@@ -46,7 +45,6 @@ impl YtClient {
         
         match YtMusic::new_unauthenticated().await {
             Ok(client) => {
-                println!("Initialized guest (unauthenticated) YouTube Music client.");
                 YtClient::Unauthenticated(client)
             }
             Err(e) => {

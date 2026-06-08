@@ -22,12 +22,24 @@ impl Tab {
 
     pub fn name(&self) -> &'static str {
         match self {
-            Tab::Search => "🔍 Search",
-            Tab::Library => "❤️ Library (Liked)",
-            Tab::Playlists => "📁 Playlists",
-            Tab::History => "🕒 History",
-            Tab::Radio => "📻 Radio (For You)",
-            Tab::Login => "🔑 Account Login",
+            Tab::Search => "Search",
+            Tab::Library => "Library",
+            Tab::Playlists => "Playlists",
+            Tab::History => "History",
+            Tab::Radio => "Radio",
+            Tab::Login => "Account",
+        }
+    }
+
+    /// A single-width glyph shown next to the tab label in the sidebar.
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Tab::Search => "/",
+            Tab::Library => "♥",
+            Tab::Playlists => "≡",
+            Tab::History => "↺",
+            Tab::Radio => "∿",
+            Tab::Login => "⚿",
         }
     }
 }

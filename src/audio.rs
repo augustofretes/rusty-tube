@@ -148,8 +148,7 @@ impl AudioPlayer {
     /// Starts playback from a specific URL at the given start offset in seconds
     pub fn start_playback(&mut self, track: Track, url: String, start_seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
         self.stop();
-        
-        println!("Spawning ffmpeg at offset: {}s", start_seconds);
+
         let mut ffmpeg_cmd = Command::new("ffmpeg");
         
         // Pass -ss BEFORE -i for fast input seeking over HTTP
