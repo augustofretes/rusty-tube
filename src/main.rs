@@ -18,7 +18,7 @@ use auth::get_cookie_path;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting YTM-TUI Player...");
+    println!("Starting Rusty Tube...");
 
     // Setup terminal
     enable_raw_mode()?;
@@ -116,6 +116,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     terminal.show_cursor()?;
 
-    println!("YTM-TUI Player shut down cleanly. Goodbye!");
+    println!("Rusty Tube shut down cleanly. Goodbye!");
     Ok(())
 }

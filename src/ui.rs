@@ -37,8 +37,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let brand = Paragraph::new(Line::from(vec![
-        Span::styled(" ♪ ytm ", Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)),
-        Span::styled("  tui player", Style::default().fg(MUTED)),
+        Span::styled(" ♪ rusty tube ", Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)),
     ]));
     f.render_widget(brand, cols[0]);
 

@@ -4,18 +4,18 @@ use std::path::PathBuf;
 use directories::BaseDirs;
 
 /// Retrieves the standard path for saving the YouTube Music cookie:
-/// ~/.config/ytm-tui/cookie.txt
+/// ~/.config/rusty-tube/cookie.txt
 pub fn get_cookie_path() -> Option<PathBuf> {
     BaseDirs::new().map(|base_dirs| {
         base_dirs
             .home_dir()
             .join(".config")
-            .join("ytm-tui")
+            .join("rusty-tube")
             .join("cookie.txt")
     })
 }
 
-/// Loads the cookie string from ~/.config/ytm-tui/cookie.txt
+/// Loads the cookie string from ~/.config/rusty-tube/cookie.txt
 #[allow(dead_code)]
 pub fn load_cookie() -> Option<String> {
     let path = get_cookie_path()?;
@@ -26,7 +26,7 @@ pub fn load_cookie() -> Option<String> {
     }
 }
 
-/// Saves the cookie string to ~/.config/ytm-tui/cookie.txt
+/// Saves the cookie string to ~/.config/rusty-tube/cookie.txt
 pub fn save_cookie(cookie_content: &str) -> std::io::Result<PathBuf> {
     let path = get_cookie_path()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "Could not find home directory"))?;
@@ -66,7 +66,7 @@ pub fn save_cookie(cookie_content: &str) -> std::io::Result<PathBuf> {
         }
     }
     
-    // Create the parent directory (~/.config/ytm-tui/) if it doesn't exist
+    // Create the parent directory (~/.config/rusty-tube/) if it doesn't exist
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
