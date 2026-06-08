@@ -3,6 +3,7 @@ mod yt;
 mod audio;
 mod app;
 mod ui;
+mod media;
 
 use std::io;
 use std::time::Duration;
@@ -33,6 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cookie_path = get_cookie_path();
     let mut app = App::new(cookie_path, stream_handle).await;
 
+    // macOS Now Playing / remote media controls. `None` on other platforms or
+    // if registration fails; the app keeps working without it either way.
+    let mut media_session = media::MediaSession::new();
+
     // Main event loop
     let mut last_tick = std::time::Instant::now();
     let tick_rate = Duration::from_millis(200);
@@ -50,6 +55,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if is_song_finished {
             app.on_song_finished();
+        }
+
+        // Service the OS media controls: pump the run loop so remote-command
+        // callbacks fire, apply any queued commands, then publish the current
+        // playback state to Now Playing / Control Center.
+        if let Some(session) = media_session.as_mut() {
+            session.pump();
+            for cmd in session.poll() {
+                app.handle_media_command(cmd);
+            }
+            let snapshot = {
+                let p = app.player.lock().unwrap();
+                media::NowPlaying {
+                    track: p.current_track.clone(),
+                    is_loading: p.is_loading,
+                    is_paused: p.is_paused(),
+                    elapsed: p.elapsed_seconds(),
+                }
+            };
+            session.update(&snapshot);
         }
 
         // Poll for crossterm input events

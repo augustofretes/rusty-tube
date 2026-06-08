@@ -14,3 +14,7 @@ ratatui = "0.26"
 crossterm = "0.27"
 directories = "5.0"
 rookie = "0.5.6"
+
+# macOS "Now Playing" / remote media controls (media keys, AirPods, Control Center).
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = "0.8"

@@ -673,6 +673,27 @@ impl App {
         }
     }
 
+    /// Applies a playback command from the OS media controls (media keys,
+    /// AirPods, Control Center). Mirrors the in-app keyboard shortcuts.
+    pub fn handle_media_command(&mut self, cmd: crate::media::MediaCommand) {
+        use crate::media::MediaCommand;
+        match cmd {
+            MediaCommand::Play => self.player.lock().unwrap().resume(),
+            MediaCommand::Pause => self.player.lock().unwrap().pause(),
+            MediaCommand::Toggle => {
+                let mut p = self.player.lock().unwrap();
+                if p.is_paused() {
+                    p.resume();
+                } else {
+                    p.pause();
+                }
+            }
+            MediaCommand::Next => self.play_next(),
+            MediaCommand::Previous => self.play_prev(),
+            MediaCommand::Stop => self.player.lock().unwrap().stop(),
+        }
+    }
+
     /// Handles global audio playback shortcut keys across any focus mode (except inputs)
     fn handle_global_audio_keys(&mut self, key: KeyEvent) {
         let mut p = self.player.lock().unwrap();
