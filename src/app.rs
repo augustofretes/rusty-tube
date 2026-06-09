@@ -130,9 +130,9 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new(cookie_path: Option<PathBuf>, stream_handle: rodio::OutputStreamHandle) -> Self {
+    pub async fn new(cookie_path: Option<PathBuf>, stream_handle: rodio::OutputStreamHandle, sample_rate: u32) -> Self {
         let client = YtClient::init(cookie_path.as_deref()).await;
-        let player = Arc::new(Mutex::new(AudioPlayer::new(stream_handle).unwrap()));
+        let player = Arc::new(Mutex::new(AudioPlayer::new(stream_handle, sample_rate).unwrap()));
         
         let cookie_path_str = cookie_path
             .map(|p| p.to_string_lossy().to_string())

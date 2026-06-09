@@ -2,18 +2,18 @@ use std::io::Read;
 use std::process::{Command, Stdio, ChildStdout, Child};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 use rodio::{OutputStreamHandle, Sink, Source};
 use crate::yt::Track;
 
-const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u16 = 2;
 
-/// Number of bytes read from ffmpeg per chunk on the decode thread (~0.09s of
-/// stereo audio). Kept small so playback can start as soon as data trickles in.
-const CHUNK_BYTES: usize = 16 * 1024;
+/// Number of bytes read from ffmpeg per chunk on the decode thread (~0.35s of
+/// stereo audio at 48kHz). Larger chunks mean fewer channel hand-offs and
+/// allocations per second; the buffer reuse below keeps allocation near zero.
+const CHUNK_BYTES: usize = 64 * 1024;
 /// How many decoded chunks may sit in the buffer before the decode thread
 /// blocks waiting for the audio thread to drain it. ~6s of read-ahead, which
 /// is plenty to ride out network jitter without the audio thread ever blocking.
@@ -22,9 +22,14 @@ const BUFFER_CHUNKS: usize = 64;
 /// Spawns a dedicated thread that reads raw PCM from ffmpeg's stdout and hands
 /// it to the audio thread through a bounded channel. All blocking I/O (network
 /// stalls, reconnects, range seeks) happens here, never on rodio's real-time
-/// audio thread. Returns the receiving end for [`PcmSource`].
-fn spawn_decode_thread(mut stdout: ChildStdout) -> Receiver<Vec<i16>> {
+/// audio thread.
+///
+/// Returns the data receiver for [`PcmSource`] plus a recycle sender: the audio
+/// thread returns drained sample buffers through it so the decode thread can
+/// refill them instead of allocating a fresh `Vec` for every chunk.
+fn spawn_decode_thread(mut stdout: ChildStdout) -> (Receiver<Vec<i16>>, Sender<Vec<i16>>) {
     let (tx, rx) = sync_channel::<Vec<i16>>(BUFFER_CHUNKS);
+    let (recycle_tx, recycle_rx) = channel::<Vec<i16>>();
     thread::spawn(move || {
         let mut buf = [0u8; CHUNK_BYTES];
         // Carries a single byte across reads when a chunk boundary splits a
@@ -34,7 +39,10 @@ fn spawn_decode_thread(mut stdout: ChildStdout) -> Receiver<Vec<i16>> {
             match stdout.read(&mut buf) {
                 Ok(0) => break, // EOF: ffmpeg exited / stream finished.
                 Ok(n) => {
-                    let mut samples = Vec::with_capacity(n / 2 + 1);
+                    // Reuse a buffer the audio thread handed back, else allocate.
+                    let mut samples = recycle_rx.try_recv().unwrap_or_default();
+                    samples.clear();
+                    samples.reserve(n / 2 + 1);
                     let mut start = 0;
                     if let Some(lo) = pending.take() {
                         samples.push(i16::from_le_bytes([lo, buf[0]]));
@@ -61,7 +69,7 @@ fn spawn_decode_thread(mut stdout: ChildStdout) -> Receiver<Vec<i16>> {
             }
         }
     });
-    rx
+    (rx, recycle_tx)
 }
 
 /// A custom rodio Source that pulls decoded PCM samples from the decode thread.
@@ -71,7 +79,9 @@ fn spawn_decode_thread(mut stdout: ChildStdout) -> Receiver<Vec<i16>> {
 /// and only reports end-of-stream once the decode thread has truly finished.
 pub struct PcmSource {
     rx: Receiver<Vec<i16>>,
-    current: std::vec::IntoIter<i16>,
+    recycle_tx: Sender<Vec<i16>>,
+    current: Vec<i16>,
+    pos: usize,
     channels: u16,
     sample_rate: u32,
     samples_read: Arc<AtomicU64>,
@@ -82,12 +92,22 @@ impl Iterator for PcmSource {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if let Some(s) = self.current.next() {
+            if self.pos < self.current.len() {
+                let s = self.current[self.pos];
+                self.pos += 1;
                 self.samples_read.fetch_add(1, Ordering::Relaxed);
                 return Some(s);
             }
+            // Hand the drained buffer back to the decode thread for reuse.
+            if !self.current.is_empty() {
+                let _ = self.recycle_tx.send(std::mem::take(&mut self.current));
+                self.pos = 0;
+            }
             match self.rx.try_recv() {
-                Ok(chunk) => self.current = chunk.into_iter(),
+                Ok(chunk) => {
+                    self.current = chunk;
+                    self.pos = 0;
+                }
                 // Underrun: data hasn't arrived yet. Emit a silent sample so the
                 // audio thread keeps spinning instead of blocking on ffmpeg.
                 Err(TryRecvError::Empty) => return Some(0),
@@ -128,15 +148,19 @@ pub struct AudioPlayer {
     current_url: Option<String>,
     pub samples_read: Arc<AtomicU64>,
     volume: f32,
-    
+
+    // Output sample rate. Matched to the audio device so rodio's mixer doesn't
+    // have to resample a second time after ffmpeg already resampled the source.
+    sample_rate: u32,
+
     // Loading state
     pub is_loading: bool,
 }
 
 impl AudioPlayer {
-    pub fn new(stream_handle: OutputStreamHandle) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(stream_handle: OutputStreamHandle, sample_rate: u32) -> Result<Self, Box<dyn std::error::Error>> {
         let sink = Sink::try_new(&stream_handle)?;
-        
+
         Ok(Self {
             stream_handle,
             sink,
@@ -145,6 +169,7 @@ impl AudioPlayer {
             current_url: None,
             samples_read: Arc::new(AtomicU64::new(0)),
             volume: 1.0,
+            sample_rate,
             is_loading: false,
         })
     }
@@ -208,7 +233,7 @@ impl AudioPlayer {
     /// Gets elapsed playback time in seconds
     pub fn elapsed_seconds(&self) -> u64 {
         let total_samples = self.samples_read.load(Ordering::Relaxed);
-        total_samples / (CHANNELS as u64 * SAMPLE_RATE as u64)
+        total_samples / (CHANNELS as u64 * self.sample_rate as u64)
     }
 
     /// Starts playback from a specific URL at the given start offset in seconds
@@ -231,7 +256,7 @@ impl AudioPlayer {
             "-i", &url,
             "-f", "s16le",
             "-ac", &CHANNELS.to_string(),
-            "-ar", &SAMPLE_RATE.to_string(),
+            "-ar", &self.sample_rate.to_string(),
             "-"
         ]);
         
@@ -243,17 +268,19 @@ impl AudioPlayer {
         let stdout = child.stdout.take().ok_or("Failed to take ffmpeg stdout")?;
         
         // Set initial sample count
-        let initial_samples = start_seconds * CHANNELS as u64 * SAMPLE_RATE as u64;
+        let initial_samples = start_seconds * CHANNELS as u64 * self.sample_rate as u64;
         self.samples_read.store(initial_samples, Ordering::Relaxed);
-        
+
         // Hand ffmpeg's stdout to a decode thread so the audio thread only ever
         // pulls from an in-memory buffer and never blocks on network I/O.
-        let rx = spawn_decode_thread(stdout);
+        let (rx, recycle_tx) = spawn_decode_thread(stdout);
         let source = PcmSource {
             rx,
-            current: Vec::new().into_iter(),
+            recycle_tx,
+            current: Vec::new(),
+            pos: 0,
             channels: CHANNELS,
-            sample_rate: SAMPLE_RATE,
+            sample_rate: self.sample_rate,
             samples_read: self.samples_read.clone(),
         };
         
