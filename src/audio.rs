@@ -1,7 +1,9 @@
-use std::io::{BufReader, Read};
+use std::io::Read;
 use std::process::{Command, Stdio, ChildStdout, Child};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
+use std::thread;
 use std::time::Duration;
 use rodio::{OutputStreamHandle, Sink, Source};
 use crate::yt::Track;
@@ -9,9 +11,67 @@ use crate::yt::Track;
 const SAMPLE_RATE: u32 = 44100;
 const CHANNELS: u16 = 2;
 
-/// A custom rodio Source that pulls raw 16-bit PCM samples from ffmpeg's stdout.
+/// Number of bytes read from ffmpeg per chunk on the decode thread (~0.09s of
+/// stereo audio). Kept small so playback can start as soon as data trickles in.
+const CHUNK_BYTES: usize = 16 * 1024;
+/// How many decoded chunks may sit in the buffer before the decode thread
+/// blocks waiting for the audio thread to drain it. ~6s of read-ahead, which
+/// is plenty to ride out network jitter without the audio thread ever blocking.
+const BUFFER_CHUNKS: usize = 64;
+
+/// Spawns a dedicated thread that reads raw PCM from ffmpeg's stdout and hands
+/// it to the audio thread through a bounded channel. All blocking I/O (network
+/// stalls, reconnects, range seeks) happens here, never on rodio's real-time
+/// audio thread. Returns the receiving end for [`PcmSource`].
+fn spawn_decode_thread(mut stdout: ChildStdout) -> Receiver<Vec<i16>> {
+    let (tx, rx) = sync_channel::<Vec<i16>>(BUFFER_CHUNKS);
+    thread::spawn(move || {
+        let mut buf = [0u8; CHUNK_BYTES];
+        // Carries a single byte across reads when a chunk boundary splits a
+        // 16-bit sample (ffmpeg emits little-endian s16le).
+        let mut pending: Option<u8> = None;
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => break, // EOF: ffmpeg exited / stream finished.
+                Ok(n) => {
+                    let mut samples = Vec::with_capacity(n / 2 + 1);
+                    let mut start = 0;
+                    if let Some(lo) = pending.take() {
+                        samples.push(i16::from_le_bytes([lo, buf[0]]));
+                        start = 1;
+                    }
+                    let rest = &buf[start..n];
+                    let pairs = rest.len() / 2;
+                    for k in 0..pairs {
+                        samples.push(i16::from_le_bytes([rest[k * 2], rest[k * 2 + 1]]));
+                    }
+                    if rest.len() % 2 == 1 {
+                        pending = Some(rest[rest.len() - 1]);
+                    }
+                    if samples.is_empty() {
+                        continue;
+                    }
+                    // Errors only if the receiver (PcmSource) was dropped, i.e.
+                    // playback moved on. Stop reading and let ffmpeg be killed.
+                    if tx.send(samples).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break, // Read error (e.g. process killed).
+            }
+        }
+    });
+    rx
+}
+
+/// A custom rodio Source that pulls decoded PCM samples from the decode thread.
+///
+/// `next()` never blocks: when the buffer underruns (ffmpeg is connecting,
+/// seeking, or stalled) it emits silence instead of freezing the audio thread,
+/// and only reports end-of-stream once the decode thread has truly finished.
 pub struct PcmSource {
-    stdout: BufReader<ChildStdout>,
+    rx: Receiver<Vec<i16>>,
+    current: std::vec::IntoIter<i16>,
     channels: u16,
     sample_rate: u32,
     samples_read: Arc<AtomicU64>,
@@ -21,13 +81,19 @@ impl Iterator for PcmSource {
     type Item = i16;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut buf = [0u8; 2];
-        match self.stdout.read_exact(&mut buf) {
-            Ok(_) => {
+        loop {
+            if let Some(s) = self.current.next() {
                 self.samples_read.fetch_add(1, Ordering::Relaxed);
-                Some(i16::from_le_bytes(buf))
+                return Some(s);
             }
-            Err(_) => None, // EOF or read error (e.g. process killed)
+            match self.rx.try_recv() {
+                Ok(chunk) => self.current = chunk.into_iter(),
+                // Underrun: data hasn't arrived yet. Emit a silent sample so the
+                // audio thread keeps spinning instead of blocking on ffmpeg.
+                Err(TryRecvError::Empty) => return Some(0),
+                // Decode thread finished (EOF or ffmpeg killed): end the source.
+                Err(TryRecvError::Disconnected) => return None,
+            }
         }
     }
 }
@@ -151,10 +217,13 @@ impl AudioPlayer {
 
         let mut ffmpeg_cmd = Command::new("ffmpeg");
         
-        // Pass -ss BEFORE -i for fast input seeking over HTTP
+        // Pass -ss BEFORE -i for fast input seeking over HTTP.
+        //
+        // Reconnect on transient network errors, but deliberately NOT at EOF:
+        // `-reconnect_at_eof` makes ffmpeg treat the natural end of a finite
+        // track as a dropped connection and hang retrying, so songs never end.
         ffmpeg_cmd.args([
             "-reconnect", "1",
-            "-reconnect_at_eof", "1",
             "-reconnect_streamed", "1",
             "-reconnect_delay_max", "5",
             "-reconnect_on_network_error", "1",
@@ -177,10 +246,12 @@ impl AudioPlayer {
         let initial_samples = start_seconds * CHANNELS as u64 * SAMPLE_RATE as u64;
         self.samples_read.store(initial_samples, Ordering::Relaxed);
         
-        // Create custom source. Wrap stdout in a large BufReader so we pull
-        // PCM from ffmpeg in bulk reads instead of one 2-byte syscall per sample.
+        // Hand ffmpeg's stdout to a decode thread so the audio thread only ever
+        // pulls from an in-memory buffer and never blocks on network I/O.
+        let rx = spawn_decode_thread(stdout);
         let source = PcmSource {
-            stdout: BufReader::with_capacity(64 * 1024, stdout),
+            rx,
+            current: Vec::new().into_iter(),
             channels: CHANNELS,
             sample_rate: SAMPLE_RATE,
             samples_read: self.samples_read.clone(),
