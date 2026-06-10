@@ -1,9 +1,9 @@
 use std::path::Path;
-use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::browser::BrowserToken;
 use ytmapi_rs::auth::noauth::NoAuthToken;
 use ytmapi_rs::common::{PlaylistID, VideoID, YoutubeID};
-use ytmapi_rs::parse::{PlaylistItem, HistoryItem, SearchResultPlaylist};
+use ytmapi_rs::parse::{HistoryItem, PlaylistItem, SearchResultPlaylist};
+use ytmapi_rs::YtMusic;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Track {
@@ -21,6 +21,7 @@ pub struct Playlist {
     pub song_count: String,
 }
 
+#[derive(Clone)]
 pub enum YtClient {
     Authenticated(YtMusic<BrowserToken>),
     Unauthenticated(YtMusic<NoAuthToken>),
@@ -42,13 +43,14 @@ impl YtClient {
                 }
             }
         }
-        
+
         match YtMusic::new_unauthenticated().await {
-            Ok(client) => {
-                YtClient::Unauthenticated(client)
-            }
+            Ok(client) => YtClient::Unauthenticated(client),
             Err(e) => {
-                panic!("Fatal: Failed to initialize even guest YouTube Music client: {}", e);
+                panic!(
+                    "Fatal: Failed to initialize even guest YouTube Music client: {}",
+                    e
+                );
             }
         }
     }
@@ -79,7 +81,10 @@ impl YtClient {
     }
 
     /// Search for playlists and return a list of mapped Playlists
-    pub async fn search_playlists(&self, query_str: &str) -> Result<Vec<Playlist>, ytmapi_rs::Error> {
+    pub async fn search_playlists(
+        &self,
+        query_str: &str,
+    ) -> Result<Vec<Playlist>, ytmapi_rs::Error> {
         let raw_playlists = match self {
             YtClient::Authenticated(yt) => yt.search_playlists(query_str).await?,
             YtClient::Unauthenticated(yt) => yt.search_playlists(query_str).await?,
@@ -111,7 +116,7 @@ impl YtClient {
                     title: "Unknown Playlist".to_string(),
                     author: "Unknown".to_string(),
                     song_count: "".to_string(),
-                }
+                },
             })
             .collect();
 
@@ -119,7 +124,10 @@ impl YtClient {
     }
 
     /// Fetch playlist tracks
-    pub async fn get_playlist_tracks(&self, playlist_id: &str) -> Result<Vec<Track>, ytmapi_rs::Error> {
+    pub async fn get_playlist_tracks(
+        &self,
+        playlist_id: &str,
+    ) -> Result<Vec<Track>, ytmapi_rs::Error> {
         let pl_id = PlaylistID::from_raw(playlist_id.to_string());
         let raw_tracks = match self {
             YtClient::Authenticated(yt) => yt.get_playlist_tracks(pl_id).await?,
@@ -132,7 +140,12 @@ impl YtClient {
                 PlaylistItem::Song(s) => Some(Track {
                     id: s.video_id.get_raw().to_string(),
                     title: s.title,
-                    artist: s.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                    artist: s
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     duration: s.duration,
                 }),
                 PlaylistItem::Video(v) => Some(Track {
@@ -144,7 +157,12 @@ impl YtClient {
                 PlaylistItem::UploadSong(u) => Some(Track {
                     id: u.video_id.get_raw().to_string(),
                     title: u.title,
-                    artist: u.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                    artist: u
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
                     duration: u.duration,
                 }),
                 PlaylistItem::Episode(e) => Some(Track {
@@ -197,7 +215,12 @@ impl YtClient {
                     HistoryItem::Song(s) => tracks.push(Track {
                         id: s.video_id.get_raw().to_string(),
                         title: s.title,
-                        artist: s.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                        artist: s
+                            .artists
+                            .iter()
+                            .map(|a| a.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         duration: s.duration,
                     }),
                     HistoryItem::Video(v) => tracks.push(Track {
@@ -209,7 +232,12 @@ impl YtClient {
                     HistoryItem::UploadSong(u) => tracks.push(Track {
                         id: u.video_id.get_raw().to_string(),
                         title: u.title,
-                        artist: u.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                        artist: u
+                            .artists
+                            .iter()
+                            .map(|a| a.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         duration: u.duration,
                     }),
                     HistoryItem::Episode(e) => tracks.push(Track {
@@ -259,7 +287,12 @@ impl YtClient {
             .map(|song| Track {
                 id: song.video_id.get_raw().to_string(),
                 title: song.title,
-                artist: song.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", "),
+                artist: song
+                    .artists
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 duration: song.duration,
             })
             .collect();

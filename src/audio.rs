@@ -1,12 +1,12 @@
+use crate::yt::Track;
+use rodio::{OutputStreamHandle, Sink, Source};
 use std::io::Read;
-use std::process::{Command, Stdio, ChildStdout, Child};
-use std::sync::Arc;
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use rodio::{OutputStreamHandle, Sink, Source};
-use crate::yt::Track;
 
 const CHANNELS: u16 = 2;
 
@@ -139,10 +139,10 @@ impl Source for PcmSource {
 pub struct AudioPlayer {
     stream_handle: OutputStreamHandle,
     sink: Sink,
-    
+
     // Subprocess state
     ffmpeg_child: Option<Child>,
-    
+
     // Playback state
     pub current_track: Option<Track>,
     current_url: Option<String>,
@@ -158,7 +158,10 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    pub fn new(stream_handle: OutputStreamHandle, sample_rate: u32) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(
+        stream_handle: OutputStreamHandle,
+        sample_rate: u32,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let sink = Sink::try_new(&stream_handle)?;
 
         Ok(Self {
@@ -187,7 +190,7 @@ impl AudioPlayer {
         self.current_url = None;
         self.samples_read.store(0, Ordering::Relaxed);
         self.is_loading = false;
-        
+
         // Recreate the sink to ensure it's in a clean state
         if let Ok(new_sink) = Sink::try_new(&self.stream_handle) {
             new_sink.set_volume(self.volume);
@@ -237,36 +240,50 @@ impl AudioPlayer {
     }
 
     /// Starts playback from a specific URL at the given start offset in seconds
-    pub fn start_playback(&mut self, track: Track, url: String, start_seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn start_playback(
+        &mut self,
+        track: Track,
+        url: String,
+        start_seconds: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.stop();
 
         let mut ffmpeg_cmd = Command::new("ffmpeg");
-        
+
         // Pass -ss BEFORE -i for fast input seeking over HTTP.
         //
         // Reconnect on transient network errors, but deliberately NOT at EOF:
         // `-reconnect_at_eof` makes ffmpeg treat the natural end of a finite
         // track as a dropped connection and hang retrying, so songs never end.
         ffmpeg_cmd.args([
-            "-reconnect", "1",
-            "-reconnect_streamed", "1",
-            "-reconnect_delay_max", "5",
-            "-reconnect_on_network_error", "1",
-            "-ss", &start_seconds.to_string(),
-            "-i", &url,
-            "-f", "s16le",
-            "-ac", &CHANNELS.to_string(),
-            "-ar", &self.sample_rate.to_string(),
-            "-"
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "5",
+            "-reconnect_on_network_error",
+            "1",
+            "-ss",
+            &start_seconds.to_string(),
+            "-i",
+            &url,
+            "-f",
+            "s16le",
+            "-ac",
+            &CHANNELS.to_string(),
+            "-ar",
+            &self.sample_rate.to_string(),
+            "-",
         ]);
-        
+
         let mut child = ffmpeg_cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()?;
-            
+
         let stdout = child.stdout.take().ok_or("Failed to take ffmpeg stdout")?;
-        
+
         // Set initial sample count
         let initial_samples = start_seconds * CHANNELS as u64 * self.sample_rate as u64;
         self.samples_read.store(initial_samples, Ordering::Relaxed);
@@ -283,15 +300,15 @@ impl AudioPlayer {
             sample_rate: self.sample_rate,
             samples_read: self.samples_read.clone(),
         };
-        
+
         self.sink.append(source);
         self.sink.play();
-        
+
         self.ffmpeg_child = Some(child);
         self.current_track = Some(track);
         self.current_url = Some(url);
         self.is_loading = false;
-        
+
         Ok(())
     }
 
@@ -305,7 +322,7 @@ impl AudioPlayer {
             Some(u) => u.clone(),
             None => return,
         };
-        
+
         // Re-start playback from the new position
         if let Err(e) = self.start_playback(track, url, seconds) {
             eprintln!("Seek error: {}", e);
@@ -314,9 +331,11 @@ impl AudioPlayer {
 }
 
 /// Helper function to asynchronously extract stream URL using yt-dlp
-pub async fn extract_stream_url(video_id: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+pub async fn extract_stream_url(
+    video_id: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let video_url = format!("https://www.youtube.com/watch?v={}", video_id);
-    
+
     // Spawn task to run blocking command
     let video_url_clone = video_url.clone();
     let stdout_bytes = tokio::task::spawn_blocking(move || {
@@ -327,7 +346,11 @@ pub async fn extract_stream_url(video_id: &str) -> Result<String, Box<dyn std::e
     .await??;
 
     if !stdout_bytes.status.success() {
-        return Err(format!("yt-dlp failed: {}", String::from_utf8_lossy(&stdout_bytes.stderr)).into());
+        return Err(format!(
+            "yt-dlp failed: {}",
+            String::from_utf8_lossy(&stdout_bytes.stderr)
+        )
+        .into());
     }
 
     let url_str = String::from_utf8(stdout_bytes.stdout)?.trim().to_string();

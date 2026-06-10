@@ -1,20 +1,20 @@
-mod auth;
-mod yt;
-mod audio;
 mod app;
-mod ui;
+mod audio;
+mod auth;
 mod media;
+mod ui;
+mod yt;
 
-use std::io;
-use std::time::Duration;
+use app::{App, Focus};
+use auth::get_cookie_path;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use app::{App, Focus};
-use auth::get_cookie_path;
+use std::io;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -80,6 +80,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             needs_redraw = true;
         }
 
+        if app.poll_background_tasks() {
+            needs_redraw = true;
+        }
+
         // Service the OS media controls: pump the run loop so remote-command
         // callbacks fire, apply any queued commands, then publish the current
         // playback state to Now Playing / Control Center.
@@ -109,13 +113,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 // Global quit command: Char('q') when not in text input fields
-                if key.code == event::KeyCode::Char('q') 
-                    && app.focus != Focus::SearchInput 
-                    && app.focus != Focus::LoginInput 
+                if key.code == event::KeyCode::Char('q')
+                    && app.focus != Focus::SearchInput
+                    && app.focus != Focus::LoginInput
                 {
                     break;
                 }
-                
+
                 app.handle_key_event(key).await;
                 needs_redraw = true;
             }

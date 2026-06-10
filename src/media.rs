@@ -71,7 +71,11 @@ mod macos {
             // The handler must be `Send + 'static`, so bridge into the main
             // thread through a channel that we drain each tick.
             let (tx, rx) = mpsc::channel();
-            controls.attach(move |event| { let _ = tx.send(event); }).ok()?;
+            controls
+                .attach(move |event| {
+                    let _ = tx.send(event);
+                })
+                .ok()?;
 
             Some(Self {
                 controls,

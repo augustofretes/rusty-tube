@@ -1,9 +1,10 @@
+use crate::audio::{extract_stream_url, AudioPlayer};
+use crate::auth::{delete_cookie, save_cookie};
+use crate::yt::{Playlist, Track, YtClient};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use crate::audio::{AudioPlayer, extract_stream_url};
-use crate::yt::{Track, Playlist, YtClient};
-use crate::auth::{save_cookie, delete_cookie};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -17,7 +18,14 @@ pub enum Tab {
 
 impl Tab {
     pub fn all() -> &'static [Tab] {
-        &[Tab::Search, Tab::Library, Tab::Playlists, Tab::History, Tab::Radio, Tab::Login]
+        &[
+            Tab::Search,
+            Tab::Library,
+            Tab::Playlists,
+            Tab::History,
+            Tab::Radio,
+            Tab::Login,
+        ]
     }
 
     pub fn name(&self) -> &'static str {
@@ -85,29 +93,31 @@ pub enum SearchType {
 }
 
 pub struct App {
-    pub client: YtClient,
+    pub client: Option<YtClient>,
     pub player: Arc<Mutex<AudioPlayer>>,
-    
+    client_init_rx: Option<UnboundedReceiver<YtClient>>,
+    auth_refresh_rx: Option<UnboundedReceiver<AuthDataRefresh>>,
+
     // UI Layout state
     pub active_tab: Tab,
     pub focus: Focus,
     pub selected_index: usize,
-    
+
     // Search tab state
     pub search_input: String,
     pub search_type: SearchType,
     pub searched_songs: Vec<Track>,
     pub searched_playlists: Vec<Playlist>,
-    
+
     // Library tab state
     pub library_songs: Vec<Track>,
-    
+
     // Playlists tab state
     pub library_playlists: Vec<Playlist>,
     pub playlist_tracks: Vec<Track>,
     pub active_playlist_id: Option<String>,
     pub active_playlist_title: Option<String>,
-    
+
     // History tab state
     pub history_tracks: Vec<Track>,
 
@@ -119,7 +129,7 @@ pub struct App {
     pub login_input: String,
     pub login_status_msg: String,
     pub cookie_path_str: String,
-    
+
     // Queue state
     pub queue: Vec<Track>,
     pub queue_index: usize,
@@ -127,26 +137,37 @@ pub struct App {
 
     // Status logs shown in UI
     pub status_message: String,
+    pub auth_data_loading: bool,
+}
+
+struct AuthDataRefresh {
+    playlists: Result<Vec<Playlist>, String>,
+    songs: Result<Vec<Track>, String>,
+    history: Result<Vec<Track>, String>,
 }
 
 impl App {
-    pub async fn new(cookie_path: Option<PathBuf>, stream_handle: rodio::OutputStreamHandle, sample_rate: u32) -> Self {
-        let client = YtClient::init(cookie_path.as_deref()).await;
-        let player = Arc::new(Mutex::new(AudioPlayer::new(stream_handle, sample_rate).unwrap()));
-        
+    pub async fn new(
+        cookie_path: Option<PathBuf>,
+        stream_handle: rodio::OutputStreamHandle,
+        sample_rate: u32,
+    ) -> Self {
+        let player = Arc::new(Mutex::new(
+            AudioPlayer::new(stream_handle, sample_rate).unwrap(),
+        ));
+
         let cookie_path_str = cookie_path
+            .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "Unknown".to_string());
-            
-        let status_message = if client.is_authenticated() {
-            "Welcome! Logged in with Google account.".to_string()
-        } else {
-            "Running in Guest Mode. Press 'Tab' to go to Login tab to log in.".to_string()
-        };
+
+        let status_message = "Connecting to YouTube Music...".to_string();
 
         let mut app = Self {
-            client,
+            client: None,
             player,
+            client_init_rx: None,
+            auth_refresh_rx: None,
             active_tab: Tab::Search,
             focus: Focus::Sidebar,
             selected_index: 0,
@@ -169,29 +190,137 @@ impl App {
             queue_index: 0,
             loop_mode: LoopMode::Off,
             status_message,
+            auth_data_loading: false,
         };
 
-        // Pre-fetch some library details if authenticated
-        if app.client.is_authenticated() {
-            app.refresh_authenticated_data().await;
-        }
+        app.start_youtube_client_init(cookie_path);
 
         app
     }
 
-    /// Fetches all personal library playlists/songs in the background
-    pub async fn refresh_authenticated_data(&mut self) {
+    pub fn is_authenticated(&self) -> bool {
+        self.client
+            .as_ref()
+            .is_some_and(|client| client.is_authenticated())
+    }
+
+    pub fn is_client_ready(&self) -> bool {
+        self.client.is_some()
+    }
+
+    fn start_youtube_client_init(&mut self, cookie_path: Option<PathBuf>) {
+        let (tx, rx) = unbounded_channel();
+        self.client_init_rx = Some(rx);
+
+        tokio::spawn(async move {
+            let client = YtClient::init(cookie_path.as_deref()).await;
+            let _ = tx.send(client);
+        });
+    }
+
+    /// Starts fetching personal library data in the background.
+    pub fn start_authenticated_data_refresh(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+
+        if !client.is_authenticated() {
+            return;
+        }
+
+        let client = client.clone();
+        let (tx, rx) = unbounded_channel();
+        self.auth_refresh_rx = Some(rx);
+        self.auth_data_loading = true;
         self.status_message = "Refreshing library data...".to_string();
-        if let Ok(playlists) = self.client.get_library_playlists().await {
-            self.library_playlists = playlists;
+
+        tokio::spawn(async move {
+            let (playlists, songs, history) = tokio::join!(
+                client.get_library_playlists(),
+                client.get_library_songs(),
+                client.get_history(),
+            );
+
+            let _ = tx.send(AuthDataRefresh {
+                playlists: playlists.map_err(|e| e.to_string()),
+                songs: songs.map_err(|e| e.to_string()),
+                history: history.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    /// Applies completed background work. Returns true when the UI should redraw.
+    pub fn poll_background_tasks(&mut self) -> bool {
+        let mut changed = false;
+
+        if let Some(rx) = self.client_init_rx.as_mut() {
+            match rx.try_recv() {
+                Ok(client) => {
+                    let is_authenticated = client.is_authenticated();
+                    self.client = Some(client);
+                    self.client_init_rx = None;
+                    self.status_message = if is_authenticated {
+                        "Welcome! Logged in with Google account.".to_string()
+                    } else {
+                        "Running in Guest Mode. Press 'Tab' to go to Login tab to log in."
+                            .to_string()
+                    };
+
+                    if is_authenticated {
+                        self.start_authenticated_data_refresh();
+                    }
+
+                    changed = true;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.client_init_rx = None;
+                    self.status_message = "Failed to initialize YouTube Music client.".to_string();
+                    changed = true;
+                }
+            }
         }
-        if let Ok(songs) = self.client.get_library_songs().await {
-            self.library_songs = songs;
+
+        let Some(rx) = self.auth_refresh_rx.as_mut() else {
+            return changed;
+        };
+
+        match rx.try_recv() {
+            Ok(refresh) => {
+                self.auth_refresh_rx = None;
+                self.auth_data_loading = false;
+                let mut failed = 0;
+
+                match refresh.playlists {
+                    Ok(playlists) => self.library_playlists = playlists,
+                    Err(_) => failed += 1,
+                }
+                match refresh.songs {
+                    Ok(songs) => self.library_songs = songs,
+                    Err(_) => failed += 1,
+                }
+                match refresh.history {
+                    Ok(history) => self.history_tracks = history,
+                    Err(_) => failed += 1,
+                }
+
+                self.status_message = if failed == 0 {
+                    "Library details updated.".to_string()
+                } else if failed == 3 {
+                    "Failed to refresh library details.".to_string()
+                } else {
+                    "Library details partially updated.".to_string()
+                };
+                true
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => changed,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                self.auth_refresh_rx = None;
+                self.auth_data_loading = false;
+                self.status_message = "Library refresh stopped.".to_string();
+                true
+            }
         }
-        if let Ok(history) = self.client.get_history().await {
-            self.history_tracks = history;
-        }
-        self.status_message = "Library details updated.".to_string();
     }
 
     /// Selects the next item in the current focused panel/list
@@ -247,20 +376,20 @@ impl App {
     pub fn play_track(&mut self, track: Track, queue: Vec<Track>, queue_index: usize) {
         self.queue = queue;
         self.queue_index = queue_index;
-        
+
         let player_lock = self.player.clone();
         let track_id = track.id.clone();
         let track_clone = track.clone();
-        
+
         {
             let mut p = player_lock.lock().unwrap();
             p.stop();
             p.current_track = Some(track_clone.clone());
             p.is_loading = true;
         }
-        
+
         self.status_message = format!("Loading URL for: {}...", track.title);
-        
+
         // Spawn background task to load the audio URL and start playback
         tokio::spawn(async move {
             match extract_stream_url(&track_id).await {
@@ -366,7 +495,7 @@ impl App {
                 // Shift focus to main panel
                 self.focus = Focus::Main;
                 self.selected_index = 0;
-                
+
                 // If switching to login tab, focus input automatically
                 if self.active_tab == Tab::Login {
                     self.focus = Focus::LoginInput;
@@ -420,7 +549,8 @@ impl App {
                         SearchType::Playlists => SearchType::Songs,
                     };
                     self.selected_index = 0;
-                    self.status_message = format!("Switched search filter to: {:?}", self.search_type);
+                    self.status_message =
+                        format!("Switched search filter to: {:?}", self.search_type);
                 }
             }
             _ => self.handle_global_audio_keys(key),
@@ -440,7 +570,8 @@ impl App {
                 }
                 SearchType::Playlists => {
                     let playlist = self.searched_playlists[self.selected_index].clone();
-                    self.load_playlist_tracks(&playlist.id, &playlist.title).await;
+                    self.load_playlist_tracks(&playlist.id, &playlist.title)
+                        .await;
                 }
             },
             Tab::Library => {
@@ -455,7 +586,8 @@ impl App {
                 } else {
                     // Open playlist
                     let playlist = self.library_playlists[self.selected_index].clone();
-                    self.load_playlist_tracks(&playlist.id, &playlist.title).await;
+                    self.load_playlist_tracks(&playlist.id, &playlist.title)
+                        .await;
                 }
             }
             Tab::History => {
@@ -464,7 +596,11 @@ impl App {
             }
             Tab::Radio => {
                 let track = self.recommendation_tracks[self.selected_index].clone();
-                self.play_track(track, self.recommendation_tracks.clone(), self.selected_index);
+                self.play_track(
+                    track,
+                    self.recommendation_tracks.clone(),
+                    self.selected_index,
+                );
             }
             Tab::Login => {}
         }
@@ -505,22 +641,28 @@ impl App {
         let seed = match seed {
             Some(t) => t,
             None => {
-                self.status_message =
-                    "Select or play a song first to start a radio.".to_string();
+                self.status_message = "Select or play a song first to start a radio.".to_string();
                 return;
             }
         };
 
         self.status_message = format!("Building radio from: {}...", seed.title);
-        match self.client.get_watch_playlist(&seed.id).await {
+        let Some(client) = self.client.as_ref() else {
+            self.status_message = "Still connecting to YouTube Music...".to_string();
+            return;
+        };
+
+        match client.get_watch_playlist(&seed.id).await {
             Ok(tracks) if !tracks.is_empty() => {
                 self.recommendation_tracks = tracks;
                 self.radio_seed_title = Some(seed.title.clone());
                 self.active_tab = Tab::Radio;
                 self.focus = Focus::Main;
                 self.selected_index = 0;
-                self.status_message =
-                    format!("Radio: {} recommendations.", self.recommendation_tracks.len());
+                self.status_message = format!(
+                    "Radio: {} recommendations.",
+                    self.recommendation_tracks.len()
+                );
 
                 let first = self.recommendation_tracks[0].clone();
                 self.play_track(first, self.recommendation_tracks.clone(), 0);
@@ -536,7 +678,12 @@ impl App {
 
     async fn load_playlist_tracks(&mut self, playlist_id: &str, playlist_title: &str) {
         self.status_message = format!("Loading tracks for: {}...", playlist_title);
-        match self.client.get_playlist_tracks(playlist_id).await {
+        let Some(client) = self.client.as_ref() else {
+            self.status_message = "Still connecting to YouTube Music...".to_string();
+            return;
+        };
+
+        match client.get_playlist_tracks(playlist_id).await {
             Ok(tracks) => {
                 self.playlist_tracks = tracks;
                 self.active_playlist_id = Some(playlist_id.to_string());
@@ -560,17 +707,22 @@ impl App {
                 if !self.search_input.trim().is_empty() {
                     let query = self.search_input.clone();
                     self.status_message = format!("Searching for '{}'...", query);
-                    
+
+                    let Some(client) = self.client.as_ref() else {
+                        self.status_message = "Still connecting to YouTube Music...".to_string();
+                        return;
+                    };
+
                     // Search in songs
-                    if let Ok(songs) = self.client.search_songs(&query).await {
+                    if let Ok(songs) = client.search_songs(&query).await {
                         self.searched_songs = songs;
                     }
-                    
+
                     // Search in playlists
-                    if let Ok(playlists) = self.client.search_playlists(&query).await {
+                    if let Ok(playlists) = client.search_playlists(&query).await {
                         self.searched_playlists = playlists;
                     }
-                    
+
                     self.status_message = "Search results loaded.".to_string();
                     self.focus = Focus::Main;
                     self.selected_index = 0;
@@ -606,14 +758,14 @@ impl App {
                 // Attempt to load and verify directly
                 match ytmapi_rs::YtMusic::from_cookie_file(&path).await {
                     Ok(validated_client) => {
-                        self.client = YtClient::Authenticated(validated_client);
+                        self.client = Some(YtClient::Authenticated(validated_client));
                         self.cookie_path_str = path.to_string_lossy().to_string();
-                        self.login_status_msg = "Login Successful! Connected to account.".to_string();
+                        self.login_status_msg =
+                            "Login Successful! Connected to account.".to_string();
                         self.login_input.clear();
                         self.status_message = "Logged in successfully.".to_string();
 
-                        // Load library data
-                        self.refresh_authenticated_data().await;
+                        self.start_authenticated_data_refresh();
 
                         self.focus = Focus::Sidebar;
                         self.selected_index = Tab::Library as usize;

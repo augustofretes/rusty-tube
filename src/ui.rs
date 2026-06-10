@@ -1,5 +1,5 @@
+use crate::app::{App, Focus, SearchType, Tab};
 use ratatui::{prelude::*, widgets::*};
-use crate::app::{App, Tab, Focus, SearchType};
 
 // -----------------------------------------------------------------
 // Palette
@@ -36,15 +36,21 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(14)])
         .split(area);
 
-    let brand = Paragraph::new(Line::from(vec![
-        Span::styled(" ♪ rusty tube ", Style::default().bg(ACCENT).fg(Color::Black).add_modifier(Modifier::BOLD)),
-    ]));
+    let brand = Paragraph::new(Line::from(vec![Span::styled(
+        " ♪ rusty tube ",
+        Style::default()
+            .bg(ACCENT)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    )]));
     f.render_widget(brand, cols[0]);
 
-    let account = if app.client.is_authenticated() {
+    let account = if app.is_authenticated() {
         Span::styled("● connected", Style::default().fg(OK))
-    } else {
+    } else if app.is_client_ready() {
         Span::styled("○ guest", Style::default().fg(WARN))
+    } else {
+        Span::styled("◌ connecting", Style::default().fg(Color::Gray))
     };
     f.render_widget(Paragraph::new(account).alignment(Alignment::Right), cols[1]);
 }
@@ -89,7 +95,12 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(border)),
         )
-        .highlight_style(Style::default().bg(SEL_BG).fg(ACCENT2).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .bg(SEL_BG)
+                .fg(ACCENT2)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("❯ ");
 
     let mut state = ListState::default();
@@ -100,7 +111,10 @@ fn render_sidebar(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
-    let focused = matches!(app.focus, Focus::Main | Focus::SearchInput | Focus::LoginInput);
+    let focused = matches!(
+        app.focus,
+        Focus::Main | Focus::SearchInput | Focus::LoginInput
+    );
     let border = if focused { ACCENT } else { MUTED };
 
     let block = Block::default()
@@ -118,21 +132,37 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.active_tab {
         Tab::Search => render_search(f, app, inner),
         Tab::Library => render_track_tab(
-            f, app, inner,
+            f,
+            app,
+            inner,
             app.library_songs.clone(),
-            "Guest mode — log in to see your liked songs.",
+            if app.is_client_ready() {
+                "Guest mode — log in to see your liked songs."
+            } else {
+                "Connecting to YouTube Music..."
+            },
+            "Loading liked songs...",
             "No liked songs yet.",
             ["TITLE", "ARTIST", "TIME"],
-            app.client.is_authenticated(),
+            app.is_authenticated(),
+            app.auth_data_loading,
         ),
         Tab::Playlists => render_playlists(f, app, inner),
         Tab::History => render_track_tab(
-            f, app, inner,
+            f,
+            app,
+            inner,
             app.history_tracks.clone(),
-            "Guest mode — log in to see your history.",
+            if app.is_client_ready() {
+                "Guest mode — log in to see your history."
+            } else {
+                "Connecting to YouTube Music..."
+            },
+            "Loading history...",
             "No history yet.",
             ["TITLE", "ARTIST", "TIME"],
-            app.client.is_authenticated(),
+            app.is_authenticated(),
+            app.auth_data_loading,
         ),
         Tab::Radio => render_radio(f, app, inner),
         Tab::Login => render_login(f, app, inner),
@@ -180,16 +210,29 @@ fn render_search(f: &mut Frame, app: &App, area: Rect) {
 
     match app.search_type {
         SearchType::Songs => track_table(
-            f, app, rows[1], &app.searched_songs, ["TITLE", "ARTIST", "TIME"],
+            f,
+            app,
+            rows[1],
+            &app.searched_songs,
+            ["TITLE", "ARTIST", "TIME"],
         ),
         SearchType::Playlists => playlist_table(
-            f, app, rows[1], &app.searched_playlists, ["PLAYLIST", "AUTHOR", "TRACKS"],
+            f,
+            app,
+            rows[1],
+            &app.searched_playlists,
+            ["PLAYLIST", "AUTHOR", "TRACKS"],
         ),
     }
 }
 
 fn render_playlists(f: &mut Frame, app: &App, area: Rect) {
-    if !app.client.is_authenticated() {
+    if !app.is_client_ready() {
+        placeholder(f, area, "Connecting to YouTube Music...", Color::Gray);
+        return;
+    }
+
+    if !app.is_authenticated() {
         placeholder(f, area, "Guest mode — log in to see your playlists.", WARN);
         return;
     }
@@ -198,24 +241,45 @@ fn render_playlists(f: &mut Frame, app: &App, area: Rect) {
         if app.playlist_tracks.is_empty() {
             placeholder(f, area, "Loading tracks…", Color::Gray);
         } else {
-            track_table(f, app, area, &app.playlist_tracks, ["TITLE", "ARTIST", "TIME"]);
+            track_table(
+                f,
+                app,
+                area,
+                &app.playlist_tracks,
+                ["TITLE", "ARTIST", "TIME"],
+            );
         }
+    } else if app.library_playlists.is_empty() && app.auth_data_loading {
+        placeholder(f, area, "Loading playlists...", Color::Gray);
     } else if app.library_playlists.is_empty() {
         placeholder(f, area, "No playlists yet.", Color::Gray);
     } else {
-        playlist_table(f, app, area, &app.library_playlists, ["PLAYLIST", "AUTHOR", "TRACKS"]);
+        playlist_table(
+            f,
+            app,
+            area,
+            &app.library_playlists,
+            ["PLAYLIST", "AUTHOR", "TRACKS"],
+        );
     }
 }
 
 fn render_radio(f: &mut Frame, app: &App, area: Rect) {
     if app.recommendation_tracks.is_empty() {
         placeholder(
-            f, area,
+            f,
+            area,
             "Highlight or play a track, then press R to start a radio of similar songs.",
             Color::Gray,
         );
     } else {
-        track_table(f, app, area, &app.recommendation_tracks, ["TITLE", "ARTIST", "TIME"]);
+        track_table(
+            f,
+            app,
+            area,
+            &app.recommendation_tracks,
+            ["TITLE", "ARTIST", "TIME"],
+        );
     }
 }
 
@@ -226,12 +290,16 @@ fn render_track_tab(
     area: Rect,
     tracks: Vec<crate::yt::Track>,
     locked_msg: &str,
+    loading_msg: &str,
     empty_msg: &str,
     headers: [&str; 3],
     authed: bool,
+    loading: bool,
 ) {
     if !authed {
         placeholder(f, area, locked_msg, WARN);
+    } else if tracks.is_empty() && loading {
+        placeholder(f, area, loading_msg, Color::Gray);
     } else if tracks.is_empty() {
         placeholder(f, area, empty_msg, Color::Gray);
     } else {
@@ -242,19 +310,32 @@ fn render_track_tab(
 fn render_login(f: &mut Frame, app: &App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(6), Constraint::Length(3), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(6),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
         .split(area);
 
     let lines = vec![
-        Line::from(Span::styled("Browser login (recommended)", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            "Browser login (recommended)",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from("  1. Ctrl+O — open music.youtube.com"),
         Line::from("  2. Sign in there (skip if already signed in)"),
         Line::from("  3. Return and press Enter to import your session"),
         Line::from(""),
-        Line::from(Span::styled("Manual: paste your Cookie header below, then Enter.", Style::default().fg(MUTED))),
+        Line::from(Span::styled(
+            "Manual: paste your Cookie header below, then Enter.",
+            Style::default().fg(MUTED),
+        )),
     ];
-    f.render_widget(Paragraph::new(lines).style(Style::default().fg(Color::Gray)), rows[0]);
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(Color::Gray)),
+        rows[0],
+    );
 
     let active = app.focus == Focus::LoginInput;
     let border = if active { WARN } else { MUTED };
@@ -268,7 +349,10 @@ fn render_login(f: &mut Frame, app: &App, area: Rect) {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(border))
-            .title(Span::styled(" Ctrl+O browser · Enter import ", Style::default().fg(border))),
+            .title(Span::styled(
+                " Ctrl+O browser · Enter import ",
+                Style::default().fg(border),
+            )),
     );
     f.render_widget(input, rows[1]);
 
@@ -286,40 +370,75 @@ fn render_login(f: &mut Frame, app: &App, area: Rect) {
 // -----------------------------------------------------------------
 // Shared table helpers
 // -----------------------------------------------------------------
-fn track_table(f: &mut Frame, app: &App, area: Rect, tracks: &[crate::yt::Track], headers: [&str; 3]) {
+fn track_table(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    tracks: &[crate::yt::Track],
+    headers: [&str; 3],
+) {
     let rows: Vec<Row> = tracks
         .iter()
         .map(|t| {
             Row::new(vec![
                 Cell::from(t.title.clone()),
-                Cell::from(Span::styled(t.artist.clone(), Style::default().fg(Color::Gray))),
+                Cell::from(Span::styled(
+                    t.artist.clone(),
+                    Style::default().fg(Color::Gray),
+                )),
                 Cell::from(Span::styled(t.duration.clone(), Style::default().fg(MUTED))),
             ])
         })
         .collect();
-    render_table(f, app, area, rows, headers, [
-        Constraint::Percentage(55),
-        Constraint::Percentage(35),
-        Constraint::Length(6),
-    ]);
+    render_table(
+        f,
+        app,
+        area,
+        rows,
+        headers,
+        [
+            Constraint::Percentage(55),
+            Constraint::Percentage(35),
+            Constraint::Length(6),
+        ],
+    );
 }
 
-fn playlist_table(f: &mut Frame, app: &App, area: Rect, items: &[crate::yt::Playlist], headers: [&str; 3]) {
+fn playlist_table(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    items: &[crate::yt::Playlist],
+    headers: [&str; 3],
+) {
     let rows: Vec<Row> = items
         .iter()
         .map(|p| {
             Row::new(vec![
                 Cell::from(p.title.clone()),
-                Cell::from(Span::styled(p.author.clone(), Style::default().fg(Color::Gray))),
-                Cell::from(Span::styled(p.song_count.clone(), Style::default().fg(MUTED))),
+                Cell::from(Span::styled(
+                    p.author.clone(),
+                    Style::default().fg(Color::Gray),
+                )),
+                Cell::from(Span::styled(
+                    p.song_count.clone(),
+                    Style::default().fg(MUTED),
+                )),
             ])
         })
         .collect();
-    render_table(f, app, area, rows, headers, [
-        Constraint::Percentage(55),
-        Constraint::Percentage(30),
-        Constraint::Length(8),
-    ]);
+    render_table(
+        f,
+        app,
+        area,
+        rows,
+        headers,
+        [
+            Constraint::Percentage(55),
+            Constraint::Percentage(30),
+            Constraint::Length(8),
+        ],
+    );
 }
 
 fn render_table(
@@ -337,7 +456,12 @@ fn render_table(
                 .bottom_margin(0),
         )
         .column_spacing(2)
-        .highlight_style(Style::default().bg(SEL_BG).fg(ACCENT).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .bg(SEL_BG)
+                .fg(ACCENT)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▶ ");
 
     let mut state = TableState::default();
@@ -354,7 +478,11 @@ fn placeholder(f: &mut Frame, area: Rect, msg: &str, color: Color) {
         .style(Style::default().fg(color));
     // Vertically center-ish by padding from the top.
     let pad = area.height.saturating_sub(2) / 2;
-    let inner = Rect { y: area.y + pad, height: area.height.saturating_sub(pad), ..area };
+    let inner = Rect {
+        y: area.y + pad,
+        height: area.height.saturating_sub(pad),
+        ..area
+    };
     f.render_widget(text, inner);
 }
 
@@ -379,13 +507,21 @@ fn render_player(f: &mut Frame, app: &App, area: Rect) {
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
         .split(inner);
 
     // Row 1 — state + track
     let (title, artist, duration_str) = match &current_track {
         Some(t) => (t.title.clone(), t.artist.clone(), t.duration.clone()),
-        None => ("Nothing playing".to_string(), String::new(), "0:00".to_string()),
+        None => (
+            "Nothing playing".to_string(),
+            String::new(),
+            "0:00".to_string(),
+        ),
     };
     let state = if is_loading {
         Span::styled("⠿ ", Style::default().fg(WARN).add_modifier(Modifier::BOLD))
@@ -398,7 +534,10 @@ fn render_player(f: &mut Frame, app: &App, area: Rect) {
     };
     let mut spans = vec![
         state,
-        Span::styled(title, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            title,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
     ];
     if !artist.is_empty() {
         spans.push(Span::styled("  —  ", Style::default().fg(MUTED)));
@@ -409,7 +548,12 @@ fn render_player(f: &mut Frame, app: &App, area: Rect) {
     // Row 2 — progress bar
     let total = parse_duration_to_seconds(&duration_str);
     f.render_widget(
-        Paragraph::new(progress_line(elapsed, total, &duration_str, layout[1].width)),
+        Paragraph::new(progress_line(
+            elapsed,
+            total,
+            &duration_str,
+            layout[1].width,
+        )),
         layout[1],
     );
 
@@ -423,12 +567,20 @@ fn render_player(f: &mut Frame, app: &App, area: Rect) {
 /// Builds a btop-style progress bar: `1:23 ━━━━━━╸──────── 3:45`.
 fn progress_line(elapsed: u64, total: u64, total_str: &str, width: u16) -> Line<'static> {
     let elapsed_str = format_seconds_to_duration(elapsed);
-    let total_disp = if total > 0 { total_str.to_string() } else { "--:--".to_string() };
+    let total_disp = if total > 0 {
+        total_str.to_string()
+    } else {
+        "--:--".to_string()
+    };
 
     let reserved = elapsed_str.len() + total_disp.len() + 2; // two spaces
     let bar_w = (width as usize).saturating_sub(reserved).max(1);
 
-    let ratio = if total > 0 { (elapsed as f64 / total as f64).clamp(0.0, 1.0) } else { 0.0 };
+    let ratio = if total > 0 {
+        (elapsed as f64 / total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let filled = ((bar_w as f64) * ratio).round() as usize;
     let filled = filled.min(bar_w);
 
@@ -436,7 +588,10 @@ fn progress_line(elapsed: u64, total: u64, total_str: &str, width: u16) -> Line<
     let bar_empty: String = "─".repeat(bar_w - filled);
 
     Line::from(vec![
-        Span::styled(elapsed_str, Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            elapsed_str,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
         Span::styled(bar_filled, Style::default().fg(ACCENT)),
         Span::styled(bar_empty, Style::default().fg(MUTED)),
@@ -446,7 +601,12 @@ fn progress_line(elapsed: u64, total: u64, total_str: &str, width: u16) -> Line<
 }
 
 fn controls_line(app: &App, volume: f32) -> Line<'static> {
-    let key = |k: &str| Span::styled(k.to_string(), Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
+    let key = |k: &str| {
+        Span::styled(
+            k.to_string(),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        )
+    };
     let lbl = |l: &str| Span::styled(l.to_string(), Style::default().fg(Color::Gray));
     let sep = || Span::styled("  ", Style::default());
 
@@ -458,13 +618,32 @@ fn controls_line(app: &App, volume: f32) -> Line<'static> {
     };
 
     Line::from(vec![
-        key("␣"), lbl(" play"), sep(),
-        key("n/p"), lbl(" skip"), sep(),
-        key("←→"), lbl(" seek"), sep(),
-        key("↑↓"), Span::styled(format!(" {:.0}%", volume * 100.0), Style::default().fg(Color::Gray)), sep(),
-        key("r"), Span::styled(format!(" {}", app.loop_mode.label()), repeat_style), sep(),
-        key("R"), lbl(" radio"), sep(),
-        Span::styled("q", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)), lbl(" quit"),
+        key("␣"),
+        lbl(" play"),
+        sep(),
+        key("n/p"),
+        lbl(" skip"),
+        sep(),
+        key("←→"),
+        lbl(" seek"),
+        sep(),
+        key("↑↓"),
+        Span::styled(
+            format!(" {:.0}%", volume * 100.0),
+            Style::default().fg(Color::Gray),
+        ),
+        sep(),
+        key("r"),
+        Span::styled(format!(" {}", app.loop_mode.label()), repeat_style),
+        sep(),
+        key("R"),
+        lbl(" radio"),
+        sep(),
+        Span::styled(
+            "q",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        lbl(" quit"),
     ])
 }
 
