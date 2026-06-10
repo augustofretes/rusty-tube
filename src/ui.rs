@@ -61,7 +61,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 fn render_body(f: &mut Frame, app: &mut App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(15), Constraint::Min(20)])
+        .constraints([Constraint::Length(17), Constraint::Min(20)])
         .split(area);
 
     render_sidebar(f, app, cols[0]);
@@ -165,6 +165,7 @@ fn render_content(f: &mut Frame, app: &mut App, area: Rect) {
             app.auth_data_loading,
         ),
         Tab::Radio => render_radio(f, app, inner),
+        Tab::Queue => render_queue(f, app, inner),
         Tab::Login => render_login(f, app, inner),
     }
 }
@@ -281,6 +282,15 @@ fn render_radio(f: &mut Frame, app: &App, area: Rect) {
             ["TITLE", "ARTIST", "TIME"],
         );
     }
+}
+
+fn render_queue(f: &mut Frame, app: &App, area: Rect) {
+    if app.queue.is_empty() {
+        placeholder(f, area, "Queue is empty.", Color::Gray);
+        return;
+    }
+
+    queue_table(f, app, area);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -437,6 +447,66 @@ fn playlist_table(
             Constraint::Percentage(55),
             Constraint::Percentage(30),
             Constraint::Length(8),
+        ],
+    );
+}
+
+fn queue_table(f: &mut Frame, app: &App, area: Rect) {
+    let current_id = app
+        .player
+        .lock()
+        .unwrap()
+        .current_track
+        .as_ref()
+        .map(|track| track.id.clone());
+
+    let rows: Vec<Row> = app
+        .queue
+        .iter()
+        .enumerate()
+        .map(|(index, track)| {
+            let is_current =
+                current_id.as_ref().is_some_and(|id| id == &track.id) && index == app.queue_index;
+            let marker = if is_current {
+                "now".to_string()
+            } else if index == app.queue_index + 1 {
+                "next".to_string()
+            } else {
+                format!("{:02}", index + 1)
+            };
+            let title_style = if is_current {
+                Style::default().fg(OK).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            Row::new(vec![
+                Cell::from(Line::from(vec![
+                    Span::styled(format!("{marker} "), Style::default().fg(MUTED)),
+                    Span::styled(track.title.clone(), title_style),
+                ])),
+                Cell::from(Span::styled(
+                    track.artist.clone(),
+                    Style::default().fg(Color::Gray),
+                )),
+                Cell::from(Span::styled(
+                    track.duration.clone(),
+                    Style::default().fg(MUTED),
+                )),
+            ])
+        })
+        .collect();
+
+    render_table(
+        f,
+        app,
+        area,
+        rows,
+        ["QUEUE", "ARTIST", "TIME"],
+        [
+            Constraint::Percentage(55),
+            Constraint::Percentage(35),
+            Constraint::Length(6),
         ],
     );
 }
@@ -638,6 +708,12 @@ fn controls_line(app: &App, volume: f32) -> Line<'static> {
         sep(),
         key("R"),
         lbl(" radio"),
+        sep(),
+        key("e"),
+        lbl(" queue"),
+        sep(),
+        key("N"),
+        lbl(" next"),
         sep(),
         Span::styled(
             "q",

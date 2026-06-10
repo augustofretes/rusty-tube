@@ -60,6 +60,9 @@ cargo run --release
 - `q` - Quit application (when search or login input is not focused)
 - `Space` - Play / Pause
 - `n` / `p` - Next / previous track
+- `e` - Add selected song to the queue
+- `N` - Play selected song next
+- `x` - Remove selected song from the Queue tab
 - `a` / `d` - Seek backward / forward
 - `w` / `s` - Volume up / down
 - Arrow keys / Enter - Navigate listings and select songs

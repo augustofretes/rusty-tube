@@ -13,7 +13,8 @@ pub enum Tab {
     Playlists = 2,
     History = 3,
     Radio = 4,
-    Login = 5,
+    Queue = 5,
+    Login = 6,
 }
 
 impl Tab {
@@ -24,6 +25,7 @@ impl Tab {
             Tab::Playlists,
             Tab::History,
             Tab::Radio,
+            Tab::Queue,
             Tab::Login,
         ]
     }
@@ -35,6 +37,7 @@ impl Tab {
             Tab::Playlists => "Playlists",
             Tab::History => "History",
             Tab::Radio => "Radio",
+            Tab::Queue => "Queue",
             Tab::Login => "Account",
         }
     }
@@ -47,6 +50,7 @@ impl Tab {
             Tab::Playlists => "≡",
             Tab::History => "↺",
             Tab::Radio => "∿",
+            Tab::Queue => "≡",
             Tab::Login => "⚿",
         }
     }
@@ -366,6 +370,7 @@ impl App {
                 }
                 Tab::History => self.history_tracks.len(),
                 Tab::Radio => self.recommendation_tracks.len(),
+                Tab::Queue => self.queue.len(),
                 Tab::Login => 0,
             },
             Focus::SearchInput | Focus::LoginInput => 0,
@@ -409,6 +414,113 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Appends a track to the end of the playback queue.
+    pub fn add_track_to_queue(&mut self, track: Track) {
+        let title = track.title.clone();
+        self.queue.push(track);
+        if self.queue.len() == 1 {
+            self.queue_index = 0;
+        }
+        self.status_message = format!("Added to queue: {}", title);
+    }
+
+    /// Inserts a track immediately after the currently playing queue item.
+    /// When called from the Queue tab, `source_index` moves the existing item
+    /// instead of duplicating it.
+    pub fn play_track_next(&mut self, track: Track, source_index: Option<usize>) {
+        let title = track.title.clone();
+        let current_track = self.player.lock().unwrap().current_track.clone();
+
+        let Some(current_track) = current_track else {
+            self.play_track(track.clone(), vec![track], 0);
+            return;
+        };
+
+        self.sync_queue_index_to_current();
+
+        if self.queue.is_empty() {
+            self.queue.push(current_track);
+            self.queue_index = 0;
+        }
+
+        if let Some(source_index) = source_index.filter(|&index| index < self.queue.len()) {
+            if source_index == self.queue_index {
+                self.status_message = format!("Already playing: {}", title);
+                return;
+            }
+
+            let moved = self.queue.remove(source_index);
+            if source_index < self.queue_index {
+                self.queue_index -= 1;
+            }
+            let insert_at = (self.queue_index + 1).min(self.queue.len());
+            self.queue.insert(insert_at, moved);
+        } else {
+            let insert_at = (self.queue_index + 1).min(self.queue.len());
+            self.queue.insert(insert_at, track);
+        }
+
+        self.status_message = format!("Playing next: {}", title);
+    }
+
+    /// Removes a track from the queue. Removing the currently playing track
+    /// skips to the next queued item when one exists.
+    pub fn remove_queue_track(&mut self, index: usize) {
+        if index >= self.queue.len() {
+            return;
+        }
+
+        let removed = self.queue.remove(index);
+        let was_current = index == self.queue_index
+            && self
+                .player
+                .lock()
+                .unwrap()
+                .current_track
+                .as_ref()
+                .is_some_and(|track| track.id == removed.id);
+
+        if was_current {
+            if self.queue.is_empty() {
+                self.queue_index = 0;
+                self.player.lock().unwrap().stop();
+            } else {
+                let next_index = index.min(self.queue.len() - 1);
+                let next_track = self.queue[next_index].clone();
+                self.play_track(next_track, self.queue.clone(), next_index);
+            }
+        } else {
+            if index < self.queue_index {
+                self.queue_index -= 1;
+            }
+            if self.queue_index >= self.queue.len() {
+                self.queue_index = self.queue.len().saturating_sub(1);
+            }
+        }
+
+        if self.active_tab == Tab::Queue && self.selected_index >= self.queue.len() {
+            self.selected_index = self.queue.len().saturating_sub(1);
+        }
+
+        self.status_message = format!("Removed from queue: {}", removed.title);
+    }
+
+    fn sync_queue_index_to_current(&mut self) {
+        let current_id = self
+            .player
+            .lock()
+            .unwrap()
+            .current_track
+            .as_ref()
+            .map(|track| track.id.clone());
+
+        if let Some(current_id) = current_id {
+            if let Some(index) = self.queue.iter().position(|track| track.id == current_id) {
+                self.queue_index = index;
+            }
+        }
     }
 
     /// Advances to the next track in the queue (if any)
@@ -548,6 +660,11 @@ impl App {
             KeyCode::Enter => {
                 self.execute_main_selection().await;
             }
+            KeyCode::Char('e') => self.add_selected_track_to_queue(),
+            KeyCode::Char('N') => self.play_selected_track_next(),
+            KeyCode::Char('x') if self.active_tab == Tab::Queue => {
+                self.remove_queue_track(self.selected_index);
+            }
             KeyCode::Char('R') => self.start_radio().await,
             KeyCode::Tab => {
                 // Toggle search type if on search tab
@@ -610,6 +727,10 @@ impl App {
                     self.selected_index,
                 );
             }
+            Tab::Queue => {
+                let track = self.queue[self.selected_index].clone();
+                self.play_track(track, self.queue.clone(), self.selected_index);
+            }
             Tab::Login => {}
         }
     }
@@ -634,7 +755,29 @@ impl App {
             }
             Tab::History => self.history_tracks.get(self.selected_index).cloned(),
             Tab::Radio => self.recommendation_tracks.get(self.selected_index).cloned(),
+            Tab::Queue => self.queue.get(self.selected_index).cloned(),
             Tab::Login => None,
+        }
+    }
+
+    fn add_selected_track_to_queue(&mut self) {
+        match self.current_selected_track() {
+            Some(track) => self.add_track_to_queue(track),
+            None => {
+                self.status_message = "Select a song first to add it to the queue.".to_string();
+            }
+        }
+    }
+
+    fn play_selected_track_next(&mut self) {
+        match self.current_selected_track() {
+            Some(track) => {
+                let source_index = (self.active_tab == Tab::Queue).then_some(self.selected_index);
+                self.play_track_next(track, source_index);
+            }
+            None => {
+                self.status_message = "Select a song first to play it next.".to_string();
+            }
         }
     }
 
