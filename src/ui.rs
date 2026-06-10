@@ -624,10 +624,10 @@ fn controls_line(app: &App, volume: f32) -> Line<'static> {
         key("n/p"),
         lbl(" skip"),
         sep(),
-        key("←→"),
+        key("a/d"),
         lbl(" seek"),
         sep(),
-        key("↑↓"),
+        key("w/s"),
         Span::styled(
             format!(" {:.0}%", volume * 100.0),
             Style::default().fg(Color::Gray),

@@ -473,6 +473,14 @@ impl App {
 
     /// Handles keyboard events
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
+        if self.focus != Focus::SearchInput
+            && self.focus != Focus::LoginInput
+            && Self::is_wasd_audio_key(key)
+        {
+            self.handle_global_audio_keys(key);
+            return;
+        }
+
         match self.focus {
             Focus::Sidebar => self.handle_sidebar_key(key).await,
             Focus::Main => self.handle_main_key(key).await,
@@ -878,7 +886,20 @@ impl App {
                 p.seek(elapsed + 10);
                 self.status_message = format!("Seek forward: {}s", elapsed + 10);
             }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                // Seek forward 10 seconds
+                let elapsed = p.elapsed_seconds();
+                p.seek(elapsed + 10);
+                self.status_message = format!("Seek forward: {}s", elapsed + 10);
+            }
             KeyCode::Left => {
+                // Seek backward 10 seconds
+                let elapsed = p.elapsed_seconds();
+                let new_pos = elapsed.saturating_sub(10);
+                p.seek(new_pos);
+                self.status_message = format!("Seek backward: {}s", new_pos);
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
                 // Seek backward 10 seconds
                 let elapsed = p.elapsed_seconds();
                 let new_pos = elapsed.saturating_sub(10);
@@ -892,7 +913,21 @@ impl App {
                 p.set_volume(new_vol);
                 self.status_message = format!("Volume: {:.0}%", new_vol * 100.0);
             }
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                // Volume up
+                let vol = p.volume();
+                let new_vol = (vol + 0.05).min(1.0);
+                p.set_volume(new_vol);
+                self.status_message = format!("Volume: {:.0}%", new_vol * 100.0);
+            }
             KeyCode::Down => {
+                // Volume down
+                let vol = p.volume();
+                let new_vol = (vol - 0.05).max(0.0);
+                p.set_volume(new_vol);
+                self.status_message = format!("Volume: {:.0}%", new_vol * 100.0);
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
                 // Volume down
                 let vol = p.volume();
                 let new_vol = (vol - 0.05).max(0.0);
@@ -905,5 +940,21 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    fn is_wasd_audio_key(key: KeyEvent) -> bool {
+        let plain_key = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
+        plain_key
+            && matches!(
+                key.code,
+                KeyCode::Char('w')
+                    | KeyCode::Char('W')
+                    | KeyCode::Char('a')
+                    | KeyCode::Char('A')
+                    | KeyCode::Char('s')
+                    | KeyCode::Char('S')
+                    | KeyCode::Char('d')
+                    | KeyCode::Char('D')
+            )
     }
 }

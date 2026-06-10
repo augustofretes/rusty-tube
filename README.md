@@ -58,9 +58,10 @@ cargo run --release
 ## Controls
 
 - `q` - Quit application (when search or login input is not focused)
-- `Space` / `p` - Play / Pause
-- `s` - Seek forward / search focus depending on layout
-- `v` / `Volume` - Adjust volume
+- `Space` - Play / Pause
+- `n` / `p` - Next / previous track
+- `a` / `d` - Seek backward / forward
+- `w` / `s` - Volume up / down
 - Arrow keys / Enter - Navigate listings and select songs
 
 ---
