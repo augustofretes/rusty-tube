@@ -9,6 +9,14 @@ A terminal-based YouTube Music player written in Rust. Features search, playlist
 
 ---
 
+## Motivation
+
+Rusty Tube was built for a simple reason: most of the time, I just want to stream music in the background without paying the resource cost of a full browser-based music client. My typical use is looping a song or leaving radio running while doing something else, where hundreds of megabytes of memory and high single-digit CPU usage feel excessive.
+
+This project keeps the scope intentionally narrow: resolve music from YouTube Music, play it reliably, expose the controls that matter, and stay lightweight while doing it.
+
+---
+
 ## Features
 
 - 🔍 **Search & Discover**: Find songs and playlists directly on YouTube Music.
