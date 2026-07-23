@@ -1,7 +1,7 @@
 use std::path::Path;
 use ytmapi_rs::auth::browser::BrowserToken;
 use ytmapi_rs::auth::noauth::NoAuthToken;
-use ytmapi_rs::common::{PlaylistID, VideoID, YoutubeID};
+use ytmapi_rs::common::{LikeStatus, PlaylistID, VideoID, YoutubeID};
 use ytmapi_rs::parse::{HistoryItem, PlaylistItem, SearchResultPlaylist};
 use ytmapi_rs::YtMusic;
 
@@ -136,8 +136,8 @@ impl YtClient {
 
         let tracks = raw_tracks
             .into_iter()
-            .filter_map(|item| match item {
-                PlaylistItem::Song(s) => Some(Track {
+            .map(|item| match item {
+                PlaylistItem::Song(s) => Track {
                     id: s.video_id.get_raw().to_string(),
                     title: s.title,
                     artist: s
@@ -147,14 +147,14 @@ impl YtClient {
                         .collect::<Vec<_>>()
                         .join(", "),
                     duration: s.duration,
-                }),
-                PlaylistItem::Video(v) => Some(Track {
+                },
+                PlaylistItem::Video(v) => Track {
                     id: v.video_id.get_raw().to_string(),
                     title: v.title,
                     artist: v.channel_name,
                     duration: v.duration,
-                }),
-                PlaylistItem::UploadSong(u) => Some(Track {
+                },
+                PlaylistItem::UploadSong(u) => Track {
                     id: u.video_id.get_raw().to_string(),
                     title: u.title,
                     artist: u
@@ -164,13 +164,13 @@ impl YtClient {
                         .collect::<Vec<_>>()
                         .join(", "),
                     duration: u.duration,
-                }),
-                PlaylistItem::Episode(e) => Some(Track {
+                },
+                PlaylistItem::Episode(e) => Track {
                     id: e.episode_id.get_raw().to_string(),
                     title: e.title,
                     artist: e.podcast_name,
                     duration: "".to_string(),
-                }),
+                },
             })
             .collect();
 
@@ -298,5 +298,37 @@ impl YtClient {
             .collect();
 
         Ok(tracks)
+    }
+
+    /// Reports to YouTube Music that a song was played, recording it in the
+    /// account's listening history. No-op in guest mode. This mirrors what the
+    /// web player does when a track starts: fetch the song's tracking URL, then
+    /// register the play against it.
+    pub async fn report_played(&self, video_id: &str) -> Result<(), ytmapi_rs::Error> {
+        let yt = match self {
+            YtClient::Authenticated(yt) => yt,
+            YtClient::Unauthenticated(_) => return Ok(()), // Guests have no history.
+        };
+
+        let vid = VideoID::from_raw(video_id.to_string());
+        let tracking_url = yt.get_song_tracking_url(vid).await?;
+        yt.add_history_item(tracking_url).await?;
+        Ok(())
+    }
+
+    /// Sets the like status for a song (like, dislike, or clear the rating).
+    /// No-op in guest mode.
+    pub async fn rate_song(
+        &self,
+        video_id: &str,
+        rating: LikeStatus,
+    ) -> Result<(), ytmapi_rs::Error> {
+        let yt = match self {
+            YtClient::Authenticated(yt) => yt,
+            YtClient::Unauthenticated(_) => return Ok(()),
+        };
+
+        let vid = VideoID::from_raw(video_id.to_string());
+        yt.rate_song(vid, rating).await
     }
 }

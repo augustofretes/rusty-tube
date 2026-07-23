@@ -23,6 +23,7 @@ This project keeps the scope intentionally narrow: resolve music from YouTube Mu
 - 🎛️ **Now Playing Integration**: Supports macOS Media Keys, AirPods, and Control Center via `souvlaki`.
 - 🔑 **Automatic Authentication**: Extract browser cookies to authenticate automatically with YouTube Music.
 - 📻 **Recommendations**: Automatic queue expansion with radio recommendations and repeat modes.
+- 👍 **Ratings & History**: Like or dislike songs, and report plays back to your YouTube Music history to improve recommendations.
 - 🎚️ **Playback Control**: Pause, resume, seek, and adjust volume using hotkeys.
 - 🖥️ **Terminal UI**: Responsive, beautiful interface powered by `ratatui`.
 
@@ -73,6 +74,7 @@ cargo run --release
 - `x` - Remove selected song from the Queue tab
 - `a` / `d` - Seek backward / forward
 - `w` / `s` - Volume up / down
+- `+` / `-` - Like / dislike the current song (press again to clear)
 - Arrow keys / Enter - Navigate listings and select songs
 
 ---

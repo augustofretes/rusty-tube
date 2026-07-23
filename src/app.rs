@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
+use ytmapi_rs::common::LikeStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -139,6 +140,10 @@ pub struct App {
     pub queue_index: usize,
     pub loop_mode: LoopMode,
 
+    // Like/dislike status of the currently playing track. Reset whenever a new
+    // track starts; updated optimistically when the user rates the song.
+    pub now_playing_like: LikeStatus,
+
     // Status logs shown in UI
     pub status_message: String,
     pub auth_data_loading: bool,
@@ -193,6 +198,7 @@ impl App {
             queue: Vec::new(),
             queue_index: 0,
             loop_mode: LoopMode::Off,
+            now_playing_like: LikeStatus::Indifferent,
             status_message,
             auth_data_loading: false,
         };
@@ -382,6 +388,13 @@ impl App {
         self.queue = queue;
         self.queue_index = queue_index;
 
+        // A fresh track starts with no known rating until the user sets one.
+        self.now_playing_like = LikeStatus::Indifferent;
+
+        // Tell YouTube Music this song was played so it lands in the account's
+        // history (and informs recommendations). Best-effort, guest mode no-op.
+        self.report_play(&track.id);
+
         let player_lock = self.player.clone();
         let track_id = track.id.clone();
         let track_clone = track.clone();
@@ -413,6 +426,64 @@ impl App {
                     p.is_loading = false;
                 }
             }
+        });
+    }
+
+    /// Fire-and-forget report to YouTube Music that a track was played. Only
+    /// does anything when authenticated; failures are silently ignored so a
+    /// flaky network never interrupts playback.
+    fn report_play(&self, video_id: &str) {
+        let Some(client) = self.client.as_ref() else {
+            return;
+        };
+        if !client.is_authenticated() {
+            return;
+        }
+
+        let client = client.clone();
+        let video_id = video_id.to_string();
+        tokio::spawn(async move {
+            let _ = client.report_played(&video_id).await;
+        });
+    }
+
+    /// Likes or dislikes the currently playing track. Pressing the same rating
+    /// again clears it (back to indifferent), matching the web player's toggle.
+    /// The UI updates optimistically; the API call runs in the background.
+    fn rate_current_track(&mut self, rating: LikeStatus) {
+        let track = self.player.lock().unwrap().current_track.clone();
+        let Some(track) = track else {
+            self.status_message = "Play a song first to like or dislike it.".to_string();
+            return;
+        };
+
+        let Some(client) = self.client.as_ref() else {
+            self.status_message = "Still connecting to YouTube Music...".to_string();
+            return;
+        };
+        if !client.is_authenticated() {
+            self.status_message = "Log in to like or dislike songs.".to_string();
+            return;
+        }
+
+        // Toggle off when the user re-presses the rating already applied.
+        let new_status = if self.now_playing_like == rating {
+            LikeStatus::Indifferent
+        } else {
+            rating
+        };
+        self.now_playing_like = new_status.clone();
+
+        self.status_message = match new_status {
+            LikeStatus::Liked => format!("Liked: {}", track.title),
+            LikeStatus::Disliked => format!("Disliked: {}", track.title),
+            LikeStatus::Indifferent => format!("Cleared rating: {}", track.title),
+        };
+
+        let client = client.clone();
+        let video_id = track.id.clone();
+        tokio::spawn(async move {
+            let _ = client.rate_song(&video_id, new_status).await;
         });
     }
 
@@ -585,10 +656,25 @@ impl App {
 
     /// Handles keyboard events
     pub async fn handle_key_event(&mut self, key: KeyEvent) {
-        if self.focus != Focus::SearchInput
-            && self.focus != Focus::LoginInput
-            && Self::is_wasd_audio_key(key)
-        {
+        let typing = self.focus == Focus::SearchInput || self.focus == Focus::LoginInput;
+
+        // Like/dislike the now-playing track from anywhere outside text inputs.
+        // `+`/`=` like, `-`/`_` dislike (the unshifted keys are accepted too).
+        if !typing {
+            match key.code {
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    self.rate_current_track(LikeStatus::Liked);
+                    return;
+                }
+                KeyCode::Char('-') | KeyCode::Char('_') => {
+                    self.rate_current_track(LikeStatus::Disliked);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        if !typing && Self::is_wasd_audio_key(key) {
             self.handle_global_audio_keys(key);
             return;
         }

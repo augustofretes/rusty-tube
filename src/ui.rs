@@ -613,6 +613,24 @@ fn render_player(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::styled("  —  ", Style::default().fg(MUTED)));
         spans.push(Span::styled(artist, Style::default().fg(Color::LightBlue)));
     }
+    // Rating indicator for the now-playing track.
+    if current_track.is_some() {
+        use ytmapi_rs::common::LikeStatus;
+        let rating = match app.now_playing_like {
+            LikeStatus::Liked => Some(Span::styled(
+                "  ♥",
+                Style::default().fg(OK).add_modifier(Modifier::BOLD),
+            )),
+            LikeStatus::Disliked => Some(Span::styled(
+                "  ✗",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            LikeStatus::Indifferent => None,
+        };
+        if let Some(rating) = rating {
+            spans.push(rating);
+        }
+    }
     f.render_widget(Paragraph::new(Line::from(spans)), layout[0]);
 
     // Row 2 — progress bar
@@ -708,6 +726,9 @@ fn controls_line(app: &App, volume: f32) -> Line<'static> {
         sep(),
         key("R"),
         lbl(" radio"),
+        sep(),
+        key("+/-"),
+        lbl(" rate"),
         sep(),
         key("e"),
         lbl(" queue"),
